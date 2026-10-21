@@ -1,0 +1,9 @@
+# Installed plugin artifacts that never belong in the repository.
+node_modules/
+*.log
+
+# Editor and OS noise.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

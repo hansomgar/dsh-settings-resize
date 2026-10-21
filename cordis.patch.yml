@@ -1,0 +1,6 @@
+# dsh-settings-resize bundle patch.
+# One row only: the plugin is entirely browser-side, so the Host half is empty and
+# exists so the Web GUI loads the `./client` half with the rest of the boot graph.
+- insert:
+    - id: dsh-settings-resize
+      name: 'dsh-settings-resize'

@@ -1,0 +1,1076 @@
+任务：给 DSH 桌面版写一个本地客户端插件 dsh-settings-resize，在「设置 → 通用设置」里用三个滑动条
+调节设置弹窗的宽度、高度和透明度，改完立即生效，并且重启后仍然保留。
+
+本文件是【已实现版本的完整规格】。照此文档实现，应得到一致的效果与行为。
+文档中给出的代码为最终生效代码，可直接复制使用。
+
+================================================================================
+一、最终效果（用户看到的样子，即验收标准）
+================================================================================
+
+1. 打开 DSH → 点左下角设置 → 左侧导航选中「通用」→ 向下滚动，
+   在「链接打开方式」与「输入框回车行为」两项之间，出现本插件的一整块区域：
+
+   设置窗口尺寸
+   拖动滑块调节设置弹窗的宽高与透明度，改动立刻生效并被记住。
+
+   宽度    [========|=================]   [ 800 ] px
+   高度    [========|=================]   [ 800 ] px
+   透明度  [|==========================]   [   0 ] %
+
+   当前：800px × 800px · 透明度 0%          [ 恢复默认 ]
+
+   透明度只让弹窗底衬变透，文字与控件保持清晰；拖到 100% 时底衬完全透明，
+   弹窗边缘仍保留一圈描边，方便定位。窗口较小时宽高会自动缩小，不会超出屏幕。
+
+   区域底部有一条 .5px 分隔线（--dsw-alias-border-l2），与设置页其他条目观感一致。
+
+2. 拖动「宽度」滑块，正在打开的设置弹窗当场变宽；拖「高度」当场变高；
+   拖「透明度」弹窗底衬当场变透。不需要点保存，不需要重启。
+
+3. 三个滑块各自右侧有数字输入框，可直接键入精确数值。输入非数字时提示「请输入数字」；
+   输入越界数字时按边界截断，并在下方显示黄色提示「已按范围截断：640–2400px」。
+
+4. 底部「当前：1200px × 900px · 透明度 20%」实时反映生效值。
+   三个值【全部】等于默认值（800/800/0）时，「恢复默认」按钮置灰不可点。
+
+5. 点「恢复默认」→ 弹窗回到 800 × 800、完全不透明（透明度 0%）。
+
+6. 完全退出 DSH 再启动，尺寸与透明度保持上次的选择。
+
+7. 窗口从大缩到小时，弹窗不会溢出屏幕：宽度被夹到 100vw - 48px，
+   高度被夹到 100vh - 2 * max(24px, var(--dsh-frame-overlay-top, 24px))。
+
+8. 只影响设置弹窗。其他弹窗（如快捷键编辑）、面板、页面完全不受影响。
+
+9. 禁用插件后，设置弹窗立即回到 DSH 原始的 800 × 800、不透明、无描边，不留任何残留
+   （style 标签、四个 CSS 变量、slot 注册全部撤销）。
+
+================================================================================
+二、技术事实（已实测确认，不要重复排查）
+================================================================================
+
+- DSH 0.2.1-rc.2 / Electron 44。
+- 用户 profile 目录：C:\Users\HSG\.dsh\profiles\desktop
+- 设置弹窗面板元素带稳定属性 data-shortcut-modal="settings"。
+  其 class 是 CSS Modules 哈希（0.2.1-rc.2 为 wCInkW_panel），哈希随版本变化。
+  【禁止】用类名做选择器，只能用 data-shortcut-modal 属性。
+- DSH 原始尺寸规则（只作参照，不得修改安装目录）：
+    .wCInkW_panel {
+      width: 800px;
+      height: min(800px, calc(100vh - 2 * max(24px, var(--dsh-frame-overlay-top,24px))));
+      background: var(--dsw-alias-bg-layer-2);
+      max-width: calc(100vw - 48px);
+    }
+  注意：原规则没有 max-height，height 里用了 min()。
+  覆盖时 width/height 直接给值，再用 max-width/max-height 兜住屏幕边界。
+  还要注意：面板内层（nav / content）没有自己的背景，所以让面板底衬变透明是有效的。
+- 设置页「通用」分区向外提供 slot：settings.general.item（kind=list，scope=root）。
+  该 slot 的 ownerProps 为空（不传任何 props），
+  行内文案、当前值、写入路径全部由插件自己负责。
+  已存在的 occupant（id=order）：
+    permission=-20, language=0, appearance=10, font-size=11,
+    transcript-view=12, developer-tools=15, shortcuts=16,
+    link-opening=17, composer-enter=20, performance-usage=30,
+    session-log-deepseek=90, current-version=100
+  本插件取 order=18，正好落在 17 与 20 之间。
+- 可用主题变量（均已确认存在于该版本）：
+  --dsw-alias-label-primary / --dsw-alias-label-secondary /
+  --dsw-alias-label-tertiary / --dsw-alias-border-l2 / --dsw-alias-border-l4 /
+  --dsw-alias-bg-layer-2 / --dsw-alias-bg-module-platform /
+  --dsw-alias-interactive-bg-hover / --dsw-alias-state-warn-primary /
+  --dsw-radius-md
+- 客户端模块加载器写法：window.__ModuleLoader__.load({ id, factory })，
+  factory 内 const React = require('react')。
+  【禁止】JSX、【禁止】构建步骤、【禁止】顶层 import、【禁止】额外 npm 依赖。
+- 客户端 bundle 由 dsh-client-hmr 每 500ms 轮询 mtimeMs/ctimeMs/size，
+  检测到变化即热替换插件（React state 丢失，但 localStorage 保留）。
+  因此改完代码不必重启 DSH，等 1 秒即可；若未生效，把插件关掉再打开。
+
+================================================================================
+三、交互规格
+================================================================================
+
+三个滑块，参数必须与下表一致：
+
+  名称      状态字段        min   max   step  单位  默认
+  宽度      width            640   2400   10    px     800
+  高度      height           480   2160   10    px     800
+  透明度    transparency       0    100    1    %      0
+
+- 透明度语义：0% = 完全不透明（默认），100% = 底衬完全透明。
+- 每个滑块右侧紧跟一个 <input type="number">，宽 66px，右对齐，等宽数字，
+  并隐藏 webkit 的上下微调按钮。
+- 滑块 <input type="range"> 与数字框共享同一个值；拖动滑块时数字框同步，反之亦然。
+- 数字框输入规则：
+    · 空串        → 忽略，不写入，清空提示
+    · 非数字      → 提示「请输入数字」，不写入
+    · 数字        → 四舍五入取整，按 [min,max] 截断
+    · 发生截断    → 提示「已按范围截断：{min}–{max}{单位}」
+    · 正常         → 清空提示
+  onBlur 时清空草稿态（draft），回到受控值。
+- 「恢复默认」在三个值全部等于默认值时 disabled，样式 opacity .45 + cursor default。
+- 「恢复默认」写入 {width:800, height:800, transparency:0} 并清空提示。
+- 所有改动同时做两件事：(1) 立刻写 CSS 变量；(2) 写 localStorage。
+- 因为一次指针拖动可能在同一 tick 内连续触发多次更新，
+  组件用 useRef 保存“最新生效值”，下一次编辑基于 ref 而非本次渲染闭包，
+  否则快速拖动时宽度和高度会互相覆盖。
+
+================================================================================
+四、数据与持久化
+================================================================================
+
+localStorage key：dsh.settingsResize.v1
+值（JSON 字符串，字段顺序固定）：
+
+  {"width":1200,"height":900,"heightUnit":"px","transparency":20}
+
+- heightUnit 字段永远写 "px"（原因见第五节）。
+- 读取时对任何输入做归一化（normalize），任何异常都不得抛错：
+    · 非对象 / null / JSON 解析失败 → 全部取默认值
+    · width 缺失   → 800；非数字 → 800；取整后夹到 [640,2400]
+    · height 缺失  → 800；非数字 → 800；取整后夹到 [480,2160]
+    · transparency 缺失 → 0；非数字 → 0；取整后夹到 [0,100]
+    · 兼容老记录里可能出现的 w / h 字段名
+    · 兼容老记录的 heightUnit:"vh"：一次性换算成像素
+      height = height * (window.innerHeight || 800) / 100
+- 写 localStorage 失败（配额满/被禁）不得抛错，只是本次不持久化。
+
+CSS 变量映射（写在 document.documentElement.style 上，即 html 行内样式）：
+
+  --dsh-settings-w     = width + 'px'
+  --dsh-settings-h     = height + 'px'
+  --dsh-settings-alpha = (100 - transparency) + '%'    ← 底衬不透明度，是透明度的补值
+  --dsh-settings-edge  = transparency + '%'            ← 边缘描边强度，等于透明度
+
+  【关键】滑块量的是“透明度”，CSS 存的是“不透明度”的补值。两者不要弄反。
+
+================================================================================
+五、为什么砍掉单位下拉（记录决策，勿改回）
+================================================================================
+
+最初设想是让高度支持 px/vh 两种单位（数字框 + 单位下拉）。实际实现放弃了它，原因：
+
+1. 高度已经由 max-height: calc(100vh - 2 * max(...)) 兜底，窗口缩小时自动夹住，
+   vh 能提供的“自适应”能力已被覆盖，再加单位切换是重复能力。
+2. px/vh 混用会让滑块语义含混：同一个滑块位置在两种单位下代表不同视觉高度，
+   「当前：1200px × 90vh」这类展示也难以和滑块位置对齐。
+3. 单一像素单位让存储结构、归一化、边界提示都只需要一套逻辑。
+
+因此：高度只有 px，滑块 min=480 / max=2160 / step=10。
+但 normalize 仍保留对 heightUnit:"vh" 老记录的换算，避免历史数据出错。
+
+================================================================================
+六、CSS 实现（完整样式表，逐字照抄）
+================================================================================
+
+插入到 document.head 的 <style id="dsh-settings-resize-style">，内容：
+
+html {
+  --dsh-settings-w: 800px;
+  --dsh-settings-h: 800px;
+  --dsh-settings-alpha: 100%;
+  --dsh-settings-edge: 0%;
+}
+[data-shortcut-modal="settings"] {
+  width: var(--dsh-settings-w) !important;
+  height: var(--dsh-settings-h) !important;
+  max-width: calc(100vw - 48px) !important;
+  max-height: calc(100vh - 2 * max(24px, var(--dsh-frame-overlay-top, 24px))) !important;
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-bg-layer-2) var(--dsh-settings-alpha, 100%),
+    transparent
+  ) !important;
+  /* Fades in as the surface fades out, so a fully transparent dialog still has an edge.
+     An outline takes no space in layout, so the shipped box stays byte-for-byte sized. */
+  outline: .5px solid
+    color-mix(in srgb, var(--dsw-alias-border-l2) var(--dsh-settings-edge, 0%), transparent) !important;
+  outline-offset: -1px !important;
+}
+.dsh-settings-resize {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 0;
+  border-bottom: .5px solid var(--dsw-alias-border-l2);
+}
+.dsh-settings-resize-title {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-settings-resize-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-settings-resize-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dsh-settings-resize-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-settings-resize-slider > .dsh-settings-resize-name {
+  flex: none;
+  width: 48px;
+}
+.dsh-settings-resize-slider > input[type="range"] {
+  flex: 1 1 120px;
+  min-width: 0;
+  height: 28px;
+  margin: 0;
+  accent-color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+.dsh-settings-resize-field {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-settings-resize-field input {
+  box-sizing: border-box;
+  width: 66px;
+  height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-module-platform);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-settings-resize-field input::-webkit-outer-spin-button,
+.dsh-settings-resize-field input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.dsh-settings-resize-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.dsh-settings-resize-now {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.dsh-settings-resize-foot button {
+  height: 28px;
+  padding: 0 10px;
+  border: .5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+.dsh-settings-resize-foot button:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.dsh-settings-resize-foot button:disabled {
+  opacity: .45;
+  cursor: default;
+}
+.dsh-settings-resize-notice {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+----------- 三条实现要点，必须理解，否则做不出同样效果 -----------
+
+1) !important 是必需的。
+   原规则与我们的规则同为属性选择器/类选择器这一档优先级，
+   不加 !important 会被 CSS Modules 生成的 .wCInkW_panel 压住。
+
+2) 透明度必须只作用在【底衬】，不能给面板加 opacity。
+   如果写 opacity: 0.5，面板里所有文字、图标、导航、按钮会一起变淡，
+   调到 50% 基本没法读，效果完全不对。
+   正确做法是用 color-mix 把背景 token 向 transparent 稀释，
+   文字与控件保持 100% 不透明。这是本插件最关键的实现细节。
+
+3) 100% 透明度时用 outline 补一圈边，而不是 border。
+   拖到 100% 时底衬完全透明，只剩阴影；为了让弹窗还能被定位、
+   关闭按钮还能找到，加一圈随透明度增强的描边：
+   0% 时不画（保持 DSH 原观感），100% 时最强，中间线性过渡。
+   用 outline 而不是 border，是因为 outline 不占布局盒，
+   设定的宽度就是实测宽度，不会因为加了边框而缩水 1px。
+   配合 outline-offset: -1px 让描边画在面板内侧。
+
+================================================================================
+七、文件清单与完整源码
+================================================================================
+
+目录（两种放法都可，见第八节）：
+  A) C:\Users\HSG\.dsh\profiles\desktop\local-plugins\dsh-settings-resize\
+  B) 任意工作区目录，再用 plugin_manager 以 link 方式装入 profile
+  （本次实际采用 B：E:\Data\data_dsh\2026\dsh-settings-resize）
+
+  package.json
+  cordis.patch.yml
+  lib/index.js
+  client/client.js
+  locale/en.json
+  locale/zh.json
+  icon.svg
+  README.md
+  test/lifecycle.cjs
+
+关于 package.json 的两点说明（不要写进文件）：
+  · immediately:true 让客户端半在页面启动时就被预取，
+    避免首次打开设置才去下载 bundle 造成的短暂延迟。
+  · inject:[] 表示不依赖其他客户端包。
+
+------------------------------------------------------------------
+文件 1：package.json
+------------------------------------------------------------------
+{
+  "name": "dsh-settings-resize",
+  "version": "0.1.0",
+  "description": "调整 DSH 设置弹窗的宽度与高度：在「设置 - 通用设置」里用两个滑动条实时调节，并记住选择。",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "lib/index.js",
+    "client/client.js",
+    "cordis.patch.yml",
+    "locale/en.json",
+    "locale/zh.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  }
+}
+
+------------------------------------------------------------------
+文件 2：cordis.patch.yml
+------------------------------------------------------------------
+# dsh-settings-resize bundle patch.
+# One row only: the plugin is entirely browser-side, so the Host half is empty and
+# exists so the Web GUI loads the `./client` half with the rest of the boot graph.
+- insert:
+    - id: dsh-settings-resize
+      name: 'dsh-settings-resize'
+
+------------------------------------------------------------------
+文件 3：lib/index.js
+------------------------------------------------------------------
+/**
+ * Host half of dsh-settings-resize.
+ *
+ * The whole feature lives in the browser: the Client half writes the two CSS custom
+ * properties that size the Settings modal and keeps them in `localStorage`. This row
+ * exists so the package is a Loader entry at all, which is what makes the Web GUI
+ * publish `./client` into the boot graph.
+ */
+export const name = 'dsh-settings-resize'
+
+export function apply() {}
+
+------------------------------------------------------------------
+文件 4：locale/en.json
+------------------------------------------------------------------
+{
+  "meta": {
+    "title": "Settings window size",
+    "description": "Resize the Settings dialog with two sliders on the General settings page, and remember the choice."
+  }
+}
+
+------------------------------------------------------------------
+文件 5：locale/zh.json
+------------------------------------------------------------------
+{
+  "meta": {
+    "title": "设置窗口尺寸",
+    "description": "在「通用设置」里用两个滑动条调节设置弹窗的宽度与高度，并记住你的选择。"
+  }
+}
+
+------------------------------------------------------------------
+文件 6：icon.svg
+------------------------------------------------------------------
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="dsh-settings-resize">
+  <rect x="4" y="10" width="56" height="44" rx="9" fill="#247bbf" />
+  <rect x="11" y="17" width="42" height="30" rx="5" fill="#ffffff" fill-opacity="0.92" />
+  <rect x="11" y="17" width="13" height="30" rx="5" fill="#cfe4f7" />
+  <g fill="#247bbf">
+    <circle cx="17.5" cy="25" r="2" />
+    <circle cx="17.5" cy="32" r="2" />
+    <circle cx="17.5" cy="39" r="2" />
+  </g>
+  <g stroke="#1b5c8f" stroke-width="2.4" stroke-linecap="round">
+    <path d="M31 27h16" />
+    <path d="M31 36h10" />
+  </g>
+  <g stroke="#1b5c8f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M47 22v10" />
+    <path d="M44.5 24.5 47 22l2.5 2.5" />
+    <path d="M44.5 29.5 47 32l2.5-2.5" />
+  </g>
+</svg>
+
+------------------------------------------------------------------
+文件 7：client/client.js（完整，488 行，逐字照抄）
+------------------------------------------------------------------
+/**
+ * Client half of dsh-settings-resize.
+ *
+ * The Settings dialog is `[data-shortcut-modal="settings"]`; its class is a CSS-modules
+ * hash, so the panel is addressed by that stable attribute only. Three custom properties
+ * on `html` drive its box and its surface, and this file owns them: the values come from
+ * `localStorage` and from the sliders this plugin adds to the General settings page.
+ *
+ * Transparency fades the panel *surface* only, by mixing the surface token toward
+ * `transparent`; text and controls keep full opacity, so a see-through dialog stays
+ * readable.
+ *
+ * Everything that outlives a render (the style element, the three custom properties, the
+ * slot registration) is created inside `ctx.effect`, so disabling or removing the plugin
+ * restores the shipped 800×800 opaque dialog with no residue.
+ */
+window.__ModuleLoader__.load({
+  id: 'dsh-settings-resize',
+  factory: (require) => {
+    const React = require('react')
+    const h = React.createElement
+    const { useCallback, useRef, useState } = React
+
+    const STORAGE_KEY = 'dsh.settingsResize.v1'
+    const STYLE_ID = 'dsh-settings-resize-style'
+    const VAR_WIDTH = '--dsh-settings-w'
+    const VAR_HEIGHT = '--dsh-settings-h'
+    const VAR_ALPHA = '--dsh-settings-alpha'
+    const VAR_EDGE = '--dsh-settings-edge'
+
+    /** Slider domains. The stored value is clamped to them on every read and write. */
+    const WIDTH = { min: 640, max: 2400, step: 10, unit: 'px' }
+    const HEIGHT = { min: 480, max: 2160, step: 10, unit: 'px' }
+    // 100% leaves only the panel's own border and shadow, so the dialog edge and its close
+    // button stay findable while the surface itself is fully see-through.
+    const TRANSPARENCY = { min: 0, max: 100, step: 1, unit: '%' }
+
+    /** The shipped dialog, and what 恢复默认 restores. */
+    const DEFAULT_STATE = { width: 800, height: 800, heightUnit: 'px', transparency: 0 }
+
+    const STYLE_TEXT = `
+html {
+  --dsh-settings-w: 800px;
+  --dsh-settings-h: 800px;
+  --dsh-settings-alpha: 100%;
+  --dsh-settings-edge: 0%;
+}
+[data-shortcut-modal="settings"] {
+  width: var(--dsh-settings-w) !important;
+  height: var(--dsh-settings-h) !important;
+  max-width: calc(100vw - 48px) !important;
+  max-height: calc(100vh - 2 * max(24px, var(--dsh-frame-overlay-top, 24px))) !important;
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-bg-layer-2) var(--dsh-settings-alpha, 100%),
+    transparent
+  ) !important;
+  /* Fades in as the surface fades out, so a fully transparent dialog still has an edge.
+     An outline takes no space in layout, so the shipped box stays byte-for-byte sized. */
+  outline: .5px solid
+    color-mix(in srgb, var(--dsw-alias-border-l2) var(--dsh-settings-edge, 0%), transparent) !important;
+  outline-offset: -1px !important;
+}
+.dsh-settings-resize {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 0;
+  border-bottom: .5px solid var(--dsw-alias-border-l2);
+}
+.dsh-settings-resize-title {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-settings-resize-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-settings-resize-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dsh-settings-resize-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-settings-resize-slider > .dsh-settings-resize-name {
+  flex: none;
+  width: 48px;
+}
+.dsh-settings-resize-slider > input[type="range"] {
+  flex: 1 1 120px;
+  min-width: 0;
+  height: 28px;
+  margin: 0;
+  accent-color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+.dsh-settings-resize-field {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-settings-resize-field input {
+  box-sizing: border-box;
+  width: 66px;
+  height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-module-platform);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-settings-resize-field input::-webkit-outer-spin-button,
+.dsh-settings-resize-field input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.dsh-settings-resize-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.dsh-settings-resize-now {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.dsh-settings-resize-foot button {
+  height: 28px;
+  padding: 0 10px;
+  border: .5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+.dsh-settings-resize-foot button:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.dsh-settings-resize-foot button:disabled {
+  opacity: .45;
+  cursor: default;
+}
+.dsh-settings-resize-notice {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-warn-primary);
+}
+`
+
+    const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+
+    const toNumber = (value) => {
+      if (value === null || value === undefined || value === '') return undefined
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : undefined
+    }
+
+    /**
+     * Coerce anything read from storage into a usable state: whole pixels inside the size
+     * domains, a whole percentage inside the transparency domain, tolerating records that
+     * stored another shape, another unit, or no transparency at all.
+     */
+    function normalize(candidate) {
+      const raw = candidate !== null && typeof candidate === 'object' ? candidate : {}
+      const width = toNumber(raw.width) ?? toNumber(raw.w)
+      let height = toNumber(raw.height) ?? toNumber(raw.h)
+      // An older record may carry a viewport-relative height; resolve it once, because the
+      // custom property is written in pixels only.
+      if (raw.heightUnit === 'vh' && height !== undefined) {
+        height = (height * (window.innerHeight || DEFAULT_STATE.height)) / 100
+      }
+      const transparency = toNumber(raw.transparency)
+      return {
+        width: clamp(Math.round(width === undefined ? DEFAULT_STATE.width : width), WIDTH.min, WIDTH.max),
+        height: clamp(Math.round(height === undefined ? DEFAULT_STATE.height : height), HEIGHT.min, HEIGHT.max),
+        heightUnit: 'px',
+        transparency: clamp(
+          Math.round(transparency === undefined ? DEFAULT_STATE.transparency : transparency),
+          TRANSPARENCY.min,
+          TRANSPARENCY.max,
+        ),
+      }
+    }
+
+    function readStored() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY)
+        return normalize(raw === null ? null : JSON.parse(raw))
+      } catch {
+        return normalize(null)
+      }
+    }
+
+    /** Push a state onto the document — the custom properties — and remember it. */
+    function applyState(state) {
+      const next = normalize(state)
+      const root = document.documentElement.style
+      root.setProperty(VAR_WIDTH, next.width + 'px')
+      root.setProperty(VAR_HEIGHT, next.height + 'px')
+      // The surface keeps the remainder of its opacity; the slider measures transparency.
+      const surface = 100 - next.transparency
+      root.setProperty(VAR_ALPHA, surface + '%')
+      // The outline takes over as the surface fades, reaching full strength exactly when the
+      // surface is gone, so the dialog edge never disappears with it.
+      root.setProperty(VAR_EDGE, next.transparency + '%')
+      try {
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({
+            width: next.width,
+            height: next.height,
+            heightUnit: next.heightUnit,
+            transparency: next.transparency,
+          }),
+        )
+      } catch {
+        // A full or blocked storage keeps the state live for this run; it just will not survive a restart.
+      }
+      return next
+    }
+
+    function clearState() {
+      const root = document.documentElement.style
+      root.removeProperty(VAR_WIDTH)
+      root.removeProperty(VAR_HEIGHT)
+      root.removeProperty(VAR_ALPHA)
+      root.removeProperty(VAR_EDGE)
+    }
+
+    /**
+     * One labelled slider with a numeric field beside it: the range drags, the field takes an
+     * exact value. Both clamp to the domain and report truncation through `onNotice`.
+     */
+    function Slider(props) {
+      const { domain, label, value, hint, onCommit, onNotice } = props
+      const [draft, setDraft] = useState()
+
+      const commitNumber = (raw) => {
+        setDraft(raw)
+        const trimmed = String(raw).trim()
+        if (trimmed === '') {
+          onNotice('')
+          return
+        }
+        const parsed = Number(trimmed)
+        if (!Number.isFinite(parsed)) {
+          onNotice('请输入数字')
+          return
+        }
+        const rounded = Math.round(parsed)
+        const clamped = clamp(rounded, domain.min, domain.max)
+        onNotice(clamped === rounded ? '' : `已按范围截断：${domain.min}–${domain.max}${domain.unit}`)
+        onCommit(clamped)
+      }
+
+      return h(
+        'div',
+        { className: 'dsh-settings-resize-slider' },
+        h('span', { className: 'dsh-settings-resize-name' }, label),
+        h('input', {
+          type: 'range',
+          min: domain.min,
+          max: domain.max,
+          step: domain.step,
+          value: value,
+          'aria-label': label + '滑动条',
+          onChange: (event) => {
+            setDraft(undefined)
+            onNotice('')
+            onCommit(Number(event.target.value))
+          },
+        }),
+        h(
+          'label',
+          { className: 'dsh-settings-resize-field' },
+          h('input', {
+            type: 'number',
+            inputMode: 'numeric',
+            min: domain.min,
+            max: domain.max,
+            step: domain.step,
+            value: draft === undefined ? String(value) : draft,
+            'aria-label': label + (hint === undefined ? '' : '（' + hint + '）'),
+            onChange: (event) => {
+              commitNumber(event.target.value)
+            },
+            onBlur: () => {
+              setDraft(undefined)
+            },
+          }),
+          h('span', { 'aria-hidden': true }, domain.unit),
+        ),
+      )
+    }
+
+    function Section() {
+      const [state, setState] = useState(readStored)
+      const [notice, setNotice] = useState('')
+      // A pointer drag fires several fields in one tick, so the value the next edit composes
+      // against comes from a ref rather than from this render's closure.
+      const stateRef = useRef(state)
+
+      const commit = useCallback((next) => {
+        const applied = applyState(next)
+        stateRef.current = applied
+        setState(applied)
+      }, [])
+
+      const changeWidth = useCallback(
+        (width) => {
+          commit({ ...stateRef.current, width: width })
+        },
+        [commit],
+      )
+
+      const changeHeight = useCallback(
+        (height) => {
+          commit({ ...stateRef.current, height: height })
+        },
+        [commit],
+      )
+
+      const changeTransparency = useCallback(
+        (transparency) => {
+          commit({ ...stateRef.current, transparency: transparency })
+        },
+        [commit],
+      )
+
+      const reset = useCallback(() => {
+        setNotice('')
+        commit(DEFAULT_STATE)
+      }, [commit])
+
+      const isDefault =
+        state.width === DEFAULT_STATE.width &&
+        state.height === DEFAULT_STATE.height &&
+        state.transparency === DEFAULT_STATE.transparency
+
+      return h(
+        'div',
+        { className: 'dsh-settings-resize' },
+        h(
+          'div',
+          null,
+          h('div', { className: 'dsh-settings-resize-title' }, '设置窗口尺寸'),
+          h(
+            'div',
+            { className: 'dsh-settings-resize-desc' },
+            '拖动滑块调节设置弹窗的宽高与透明度，改动立刻生效并被记住。',
+          ),
+        ),
+        h(
+          'div',
+          { className: 'dsh-settings-resize-sliders' },
+          h(Slider, {
+            domain: WIDTH,
+            label: '宽度',
+            hint: '像素',
+            value: state.width,
+            onCommit: changeWidth,
+            onNotice: setNotice,
+          }),
+          h(Slider, {
+            domain: HEIGHT,
+            label: '高度',
+            hint: '像素',
+            value: state.height,
+            onCommit: changeHeight,
+            onNotice: setNotice,
+          }),
+          h(Slider, {
+            domain: TRANSPARENCY,
+            label: '透明度',
+            hint: '百分比',
+            value: state.transparency,
+            onCommit: changeTransparency,
+            onNotice: setNotice,
+          }),
+        ),
+        notice === ''
+          ? null
+          : h('div', { className: 'dsh-settings-resize-notice', role: 'status' }, notice),
+        h(
+          'div',
+          { className: 'dsh-settings-resize-foot' },
+          h(
+            'span',
+            { className: 'dsh-settings-resize-now' },
+            '当前：' +
+              state.width +
+              'px × ' +
+              state.height +
+              'px · 透明度 ' +
+              state.transparency +
+              '%',
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              disabled: isDefault,
+              onClick: reset,
+            },
+            '恢复默认',
+          ),
+        ),
+        h(
+          'div',
+          { className: 'dsh-settings-resize-desc' },
+          '透明度只让弹窗底衬变透，文字与控件保持清晰；拖到 100% 时底衬完全透明，弹窗边缘仍保留一圈描边，方便定位。窗口较小时宽高会自动缩小，不会超出屏幕。',
+        ),
+      )
+    }
+
+    function apply(ctx) {
+      // The CSS module builds a hashed class for the panel; the data attribute is the only
+      // stable handle, so every rule above selects on that.
+      ctx.effect(() => {
+        const style = document.createElement('style')
+        style.id = STYLE_ID
+        style.textContent = STYLE_TEXT
+        document.head.append(style)
+        return () => {
+          style.remove()
+        }
+      }, 'dsh-settings-resize: style')
+
+      // Apply the remembered state as soon as the plugin starts, and take it back off when
+      // the plugin stops, so the shipped dialog returns untouched.
+      ctx.effect(
+        () => {
+          applyState(readStored())
+          return () => {
+            clearState()
+          }
+        },
+        'dsh-settings-resize: size variables',
+      )
+
+      // A row inside General settings. The slot is declared by the General section at
+      // runtime, so `inject` accounts for any order between the two registrations.
+      ctx.effect(
+        () =>
+          ctx.slots.inject('settings.general.item', () =>
+            ctx.slots.register(
+              {
+                name: 'settings.general.item',
+                id: 'settings-resize',
+                order: 18,
+                label: () => '设置窗口尺寸',
+              },
+              Section,
+            ),
+          ),
+        'dsh-settings-resize: general settings row',
+      )
+    }
+
+    return {
+      name: 'dsh-settings-resize',
+      inject: ['slots'],
+      apply: apply,
+    }
+  },
+})
+
+------------------------------------------------------------------
+
+================================================================================
+八、安装步骤（实测可用的方式）
+================================================================================
+
+【推荐：走 plugin_manager】
+在 DSH 会话里对 Agent 说「把这个目录装成插件」，Agent 会调用
+plugin_manager install_bundle，target = 插件目录绝对路径。
+它内部执行 pnpm add + 选中 bundle + 重载配置，一步到位。
+实测返回：
+  {"stage":"enable","target":"dsh-settings-resize","enabled":true,"changed":true,
+   "application":"applied","packageResult":{"exitCode":0,...},"warnings":[]}
+
+【手工等价步骤】
+1. 备份 C:\Users\HSG\.dsh\profiles\desktop\package.json。
+2. dependencies 增加：
+     "dsh-settings-resize": "link:E:/Data/data_dsh/2026/dsh-settings-resize"
+3. dsh.profile.bundles 数组末尾追加 "dsh-settings-resize"。
+4. 在 profile 目录执行 pnpm install（该 profile 实际用 pnpm，不是 npm）。
+5. DSH 会自动热重载；若未生效，重启 DSH。
+
+【红线】读写 package.json 必须走 Node（JSON.parse + fs.writeFileSync(..., 'utf8')）。
+严禁用 PowerShell 的 Set-Content / Out-File 写 JSON —— 它们会写入 UTF-8 BOM，
+导致 DSH 解析失败、工作空间全部消失（本机发生过一次真实事故）。
+校验方法：取文件前 3 字节，应为 123,10,32（即 { LF space），不能是 239,187,191。
+
+【停用】
+在插件页关闭 dsh-settings-resize，或在 profile 的 cordis.patch.yml 里写：
+  - id: dsh-settings-resize
+    disabled: true
+停用后设置弹窗立即回到 800 × 800、不透明、无描边。
+（实测：禁用后该 occupant 从 slot 列表消失，重新启用后恢复。）
+
+================================================================================
+九、验收清单与实测结果
+================================================================================
+
+实测环境：DSH 0.2.1-rc.2，profile = desktop。
+
+[通过] 1. 插件在插件列表可见，状态正常
+        entryId=include:dsh-settings-resize, moduleName=dsh-settings-resize,
+        enabled=true, fiberPhase=active, patchId=dsh-settings-resize
+        install_bundle 返回 application="applied"，warnings=[]
+
+[通过] 2. 「通用设置」里出现该行
+        slot settings.general.item 的 occupants 中新增：
+        {registrant: "dsh-settings-resize", id: "settings-resize",
+         order: 18, priority: 0, active: true}
+        位置在 link-opening(17) 与 composer-enter(20) 之间。
+
+[通过] 3. 禁用后干净移除
+        禁用后该 occupant 从 occupant 列表消失，仅剩 Kb 的 12 项；
+        重新启用后又出现。说明 ctx.effect 清理路径正确。
+
+[通过] 4. 无配置残留
+        profile 的 cordis.patch.yml 中没有写入任何 settings-resize 行
+        （启用/停用往返后仍与初始一致）。
+        profile 的 package.json 无 BOM（前 3 字节 = 123,10,32）。
+
+[通过] 5. 生命周期单测 42 项全过（node test/lifecycle.cjs，退出码 0）
+        覆盖：模块注册、导出结构、三处 effect 注册、样式规则文本、默认值、
+              透明度混色、描边混色、老记录 90vh→810px 换算、
+              越界截断（2400 / 480 / 100 / 0）、损坏 JSON 回落默认、
+              dispose 后 style 与四个变量与注册全部清空、localStorage 保留。
+        关键断言摘录：
+          PASS default 800px width applied
+          PASS default is fully opaque
+          PASS default draws no outline
+          PASS panel surface is mixed through the alpha variable
+          PASS panel edge is mixed through the edge variable
+          PASS text and controls are not faded
+          PASS 30% transparency becomes 70% surface opacity
+          PASS transparency clamps to 100 (fully transparent, edge kept)
+          PASS edge outline reaches full strength at 100%
+          PASS stored 100% transparency is honoured
+          PASS style element removed on dispose
+          PASS custom properties removed on dispose
+          PASS slot registration removed on dispose
+
+[未验证] 6. 真实页面的渲染与 getBoundingClientRect()
+        本次开发环境无法驱动浏览器：Web GUI 端口对非认证请求返回 401
+        （需要进程内存中签名的 cookie），DevTools CDP 端口未监听，
+        experimental-inspector 端口（9230）只暴露 Host 侧 dsh://host 目标，
+        不含渲染进程页面，无法测量 DOM。
+        因此“拖到 1200 时弹窗当场变宽”只能由人工在已打开的 DSH 窗口确认。
+        人工确认方法：
+          设置 → 通用设置 → 滚到「设置窗口尺寸」→ 拖宽度滑块。
+        Console 复核：
+          document.querySelector('[data-shortcut-modal="settings"]').getBoundingClientRect()
+          getComputedStyle(document.documentElement).getPropertyValue('--dsh-settings-alpha')
+          getComputedStyle(document.querySelector('[data-shortcut-modal="settings"]')).backgroundColor
+        透明度拖到 40% 时，第三条应返回 alpha≈0.6 的颜色。
+
+================================================================================
+十、禁止事项
+================================================================================
+
+1. 不改 DSH 安装目录、不解包/改动 app.asar。
+2. 不创建目录联接（junction / symlink），只做真实文件写入。
+   （唯一例外：pnpm 安装时自己建的 node_modules 链接，那是包管理器行为。）
+3. 不新增任何 npm 运行依赖，react 由宿主 require 提供。
+4. 不用哈希类名做选择器，只用 data-shortcut-modal 属性。
+5. 不把宽高/透明度写死在默认值以外的地方；实际值一律来自用户输入 + localStorage。
+6. 不改动其他插件、不改动 cordis.patch.yml 里已有的条目。
+7. 不要用 opacity 实现透明度（会连文字一起变淡），必须用 color-mix 混背景。
+8. 不要用 border 做 100% 时的描边（会改变盒子尺寸），必须用 outline。
+
+================================================================================
+十一、开发过程中被推翻的两个最初设想（供参考，不要再走回去）
+================================================================================
+
+设想 A：新增一个左侧导航分区「窗口尺寸」
+  最初要求用 ctx.slots.inject('settings.section', ...) 注册一整页，order=5。
+  实际改为：注册到 settings.general.item，作为「通用」页里的一行。
+  原因：用户明确要求在「通用设置」里出现滑动条，而不是新增一页。
+
+设想 B：高度支持 px / vh 单位下拉
+  实际改为只有 px。原因见第五节。
+  兼容措施：normalize 仍会把老记录里的 vh 换算成 px，不会出错。
+
+================================================================================
+十二、最终交付文件
+================================================================================
+
+E:\Data\data_dsh\2026\dsh-settings-resize\
+  package.json        包清单
+  cordis.patch.yml    bundle patch（插入一行）
+  lib/index.js        宿主半，空实现
+  client/client.js    全部功能
+  locale/en.json      插件页英文标题/说明
+  locale/zh.json      插件页中文标题/说明
+  icon.svg            插件图标
+  README.md           使用说明
+  test/lifecycle.cjs  42 项生命周期单测
+  需求.txt            本文件
