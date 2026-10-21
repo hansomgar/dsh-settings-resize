@@ -345,7 +345,7 @@ html {
 {
   "name": "dsh-settings-resize",
   "version": "0.1.0",
-  "description": "调整 DSH 设置弹窗的宽度与高度：在「设置 - 通用设置」里用两个滑动条实时调节，并记住选择。",
+  "description": "调整 DSH 设置弹窗的宽度、高度与透明度：在「设置 - 通用设置」里用三个滑动条实时调节，并记住选择。",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -409,7 +409,7 @@ export function apply() {}
 {
   "meta": {
     "title": "Settings window size",
-    "description": "Resize the Settings dialog with two sliders on the General settings page, and remember the choice."
+    "description": "Resize the Settings dialog and adjust its transparency with three sliders on the General settings page, and remember the choice."
   }
 }
 
@@ -419,7 +419,7 @@ export function apply() {}
 {
   "meta": {
     "title": "设置窗口尺寸",
-    "description": "在「通用设置」里用两个滑动条调节设置弹窗的宽度与高度，并记住你的选择。"
+    "description": "在「通用设置」里用三个滑动条调节设置弹窗的宽度、高度与透明度，并记住你的选择。"
   }
 }
 
