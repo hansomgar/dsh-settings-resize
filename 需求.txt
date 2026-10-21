@@ -44,7 +44,12 @@
 8. 只影响设置弹窗。其他弹窗（如快捷键编辑）、面板、页面完全不受影响。
 
 9. 禁用插件后，设置弹窗立即回到 DSH 原始的 800 × 800、不透明、无描边，不留任何残留
-   （style 标签、四个 CSS 变量、slot 注册全部撤销）。
+   （style 标签、四个 CSS 变量、slot 注册、locale 字典全部撤销）。
+
+10. 界面文案中英双语，跟随 DSH 的「设置 → 通用 → 语言」切换，无需重启：
+    中文显示「设置窗口尺寸 / 宽度 / 高度 / 透明度 / 恢复默认」，
+    英文显示 Settings window size / Width / Height / Transparency / Reset to default。
+    所有文案来自 client.js 内的 zh / en 两份字典，组件里不得内联任何界面文字。
 
 ================================================================================
 二、技术事实（已实测确认，不要重复排查）
@@ -146,6 +151,80 @@ CSS 变量映射（写在 document.documentElement.style 上，即 html 行内�
   【关键】滑块量的是“透明度”，CSS 存的是“不透明度”的补值。两者不要弄反。
 
 ================================================================================
+四之二、中英文双语（i18n）
+================================================================================
+
+DSH 内置语言只有 zh 与 en 两个（源码 LOCALE_IDS = ["zh", "en"]）。
+本插件用 DSH 的 locale 服务做双语，不要自己读浏览器语言、也不要写死判断。
+
+客户端写法（client.js 内，apply 中）：
+
+  const NS = 'dsh-settings-resize'          // 与 cordis.patch.yml 的 id 相同
+  const zh = { title: '设置窗口尺寸', ... }   // 完整中文词典
+  const en = { title: 'Settings window size', ... }  // 完整英文词典
+
+  const locale = ctx.get('locale')          // 可选依赖，用 get 而非 inject
+  if (locale !== undefined) {
+    ctx.effect(() => locale.register(NS, { zh: zh, en: en }), '...: zh/en strings')
+  }
+
+  ctx.slots.register({
+    name: 'settings.general.item',
+    id: 'settings-resize',
+    order: 18,
+    locale: NS,                              // ← 关键：声明命名空间
+    label: () => locale === undefined ? 'Settings window size' : locale.bind(NS)('title'),
+  }, Section)
+
+  // 组件里通过 props.t 取文案：
+  function Section(props) {
+    const t = props.t
+    ... t('title') ...
+    ... t('current', { width, height, transparency }) ...
+  }
+
+机制要点（读源码确认，不要凭猜测改）：
+1. register(ns, {zh, en}) 是「带类型的对象形式」，要求两个内置 locale 都给全。
+   少一个键会直接编译报错——这正是我们想要的：不可能出现半翻译。
+2. slot 注册里给了 locale: NS 之后，框架会向组件注入 t（PropsLocale），
+   并在语言切换时重新渲染该行，组件不需要自己订阅。
+3. t 支持 {name} 占位符插值：
+     template.replace(/\{(\w+)\}/g, (m, name) => name in params ? String(params[name]) : m)
+   所以 '当前：{width}px × {height}px · 透明度 {transparency}%' 可以正常拼接。
+4. bind(ns) 返回的函数按命名空间缓存、引用稳定，可以在 label 里反复调用。
+5. 查找顺序：当前命名空间走生效语言的 fallback 链 → common 命名空间同样走一遍 → 最后显示 key 本身。
+   因此字典里漏掉某个 key 时，界面上会直接出现英文 key（如 noticeInvalid），
+   一眼就能发现，不会静默显示空白。
+
+【禁止】
+- 不要在组件里内联中文字符串（会永远显示中文，切英文时不变）。
+- 不要用 navigator.language 自行判断语言。
+- 不要只注册一个语言。
+
+文案对照表（改文案时两边一起改，键名必须完全对应）：
+
+  键名              中文                                        英文
+  title             设置窗口尺寸                                Settings window size
+  description       拖动滑块调节设置弹窗的宽高与透明度，改动立刻生效并被记住。
+                    Drag the sliders to resize the Settings dialog and adjust its transparency. Changes apply immediately and are remembered.
+  width             宽度                                        Width
+  height            高度                                        Height
+  transparency      透明度                                      Transparency
+  slider            {label}滑动条                               {label} slider
+  field             {label}（{unit}）                           {label} ({unit})
+  unitPx            像素                                        px
+  unitPercent       百分比                                      %
+  current           当前：{width}px × {height}px · 透明度 {transparency}%
+                    Current: {width}px × {height}px · transparency {transparency}%
+  reset             恢复默认                                    Reset to default
+  noticeInvalid     请输入数字                                  Enter a number
+  noticeClamped     已按范围截断：{min}–{max}{unit}             Clamped to {min}–{max}{unit}
+  footnote          透明度只让弹窗底衬变透，文字与控件保持清晰；…   Transparency fades the dialog surface only, so text and controls stay sharp. …
+
+注意：英文文案比中文长。滑块名字列用 min-width: 68px（不是固定 width），
+让「透明度」和 Transparency 都能容纳；更长的词也能撑开而不被截断。
+
+================================================================================
 五、为什么砍掉单位下拉（记录决策，勿改回）
 ================================================================================
 
@@ -221,7 +300,7 @@ html {
 }
 .dsh-settings-resize-slider > .dsh-settings-resize-name {
   flex: none;
-  width: 48px;
+  min-width: 68px;
 }
 .dsh-settings-resize-slider > input[type="range"] {
   flex: 1 1 120px;
@@ -452,7 +531,7 @@ export function apply() {}
 </svg>
 
 ------------------------------------------------------------------
-文件 7：client/client.js（完整，488 行，逐字照抄）
+文件 7：client/client.js（完整，547 行，逐字照抄）
 ------------------------------------------------------------------
 /**
  * Client half of dsh-settings-resize.
@@ -493,6 +572,49 @@ window.__ModuleLoader__.load({
 
     /** The shipped dialog, and what 恢复默认 restores. */
     const DEFAULT_STATE = { width: 800, height: 800, heightUnit: 'px', transparency: 0 }
+
+    /** Locale namespace, also the entry id in cordis.patch.yml. */
+    const NS = 'dsh-settings-resize'
+
+    /**
+     * Both shipped locales are registered in one call, which the typed form requires:
+     * a missing or extra key is a compile error and a half-translated row is impossible.
+     */
+    const zh = {
+      title: '设置窗口尺寸',
+      description: '拖动滑块调节设置弹窗的宽高与透明度，改动立刻生效并被记住。',
+      width: '宽度',
+      height: '高度',
+      transparency: '透明度',
+      slider: '{label}滑动条',
+      field: '{label}（{unit}）',
+      unitPx: '像素',
+      unitPercent: '百分比',
+      current: '当前：{width}px × {height}px · 透明度 {transparency}%',
+      reset: '恢复默认',
+      noticeInvalid: '请输入数字',
+      noticeClamped: '已按范围截断：{min}–{max}{unit}',
+      footnote:
+        '透明度只让弹窗底衬变透，文字与控件保持清晰；拖到 100% 时底衬完全透明，弹窗边缘仍保留一圈描边，方便定位。窗口较小时宽高会自动缩小，不会超出屏幕。',
+    }
+
+    const en = {
+      title: 'Settings window size',
+      description: 'Drag the sliders to resize the Settings dialog and adjust its transparency. Changes apply immediately and are remembered.',
+      width: 'Width',
+      height: 'Height',
+      transparency: 'Transparency',
+      slider: '{label} slider',
+      field: '{label} ({unit})',
+      unitPx: 'px',
+      unitPercent: '%',
+      current: 'Current: {width}px × {height}px · transparency {transparency}%',
+      reset: 'Reset to default',
+      noticeInvalid: 'Enter a number',
+      noticeClamped: 'Clamped to {min}–{max}{unit}',
+      footnote:
+        'Transparency fades the dialog surface only, so text and controls stay sharp. At 100% the surface is fully clear and a thin outline keeps the dialog edge findable. When the window is small, the size shrinks to fit the screen.',
+    }
 
     const STYLE_TEXT = `
 html {
@@ -550,7 +672,7 @@ html {
 }
 .dsh-settings-resize-slider > .dsh-settings-resize-name {
   flex: none;
-  width: 48px;
+  min-width: 68px;
 }
 .dsh-settings-resize-slider > input[type="range"] {
   flex: 1 1 120px;
@@ -710,7 +832,7 @@ html {
      * exact value. Both clamp to the domain and report truncation through `onNotice`.
      */
     function Slider(props) {
-      const { domain, label, value, hint, onCommit, onNotice } = props
+      const { domain, label, name, value, unitLabel, onCommit, onNotice, t } = props
       const [draft, setDraft] = useState()
 
       const commitNumber = (raw) => {
@@ -722,12 +844,16 @@ html {
         }
         const parsed = Number(trimmed)
         if (!Number.isFinite(parsed)) {
-          onNotice('请输入数字')
+          onNotice(t('noticeInvalid'))
           return
         }
         const rounded = Math.round(parsed)
         const clamped = clamp(rounded, domain.min, domain.max)
-        onNotice(clamped === rounded ? '' : `已按范围截断：${domain.min}–${domain.max}${domain.unit}`)
+        onNotice(
+          clamped === rounded
+            ? ''
+            : t('noticeClamped', { min: domain.min, max: domain.max, unit: domain.unit }),
+        )
         onCommit(clamped)
       }
 
@@ -741,7 +867,7 @@ html {
           max: domain.max,
           step: domain.step,
           value: value,
-          'aria-label': label + '滑动条',
+          'aria-label': t('slider', { label: label }),
           onChange: (event) => {
             setDraft(undefined)
             onNotice('')
@@ -758,7 +884,7 @@ html {
             max: domain.max,
             step: domain.step,
             value: draft === undefined ? String(value) : draft,
-            'aria-label': label + (hint === undefined ? '' : '（' + hint + '）'),
+            'aria-label': t('field', { label: label, unit: unitLabel }),
             onChange: (event) => {
               commitNumber(event.target.value)
             },
@@ -771,7 +897,10 @@ html {
       )
     }
 
-    function Section() {
+    function Section(props) {
+      // `t` is supplied by the framework through the registration's `locale` option and
+      // re-renders the row when the active language changes.
+      const t = props.t
       const [state, setState] = useState(readStored)
       const [notice, setNotice] = useState('')
       // A pointer drag fires several fields in one tick, so the value the next edit composes
@@ -821,39 +950,41 @@ html {
         h(
           'div',
           null,
-          h('div', { className: 'dsh-settings-resize-title' }, '设置窗口尺寸'),
-          h(
-            'div',
-            { className: 'dsh-settings-resize-desc' },
-            '拖动滑块调节设置弹窗的宽高与透明度，改动立刻生效并被记住。',
-          ),
+          h('div', { className: 'dsh-settings-resize-title' }, t('title')),
+          h('div', { className: 'dsh-settings-resize-desc' }, t('description')),
         ),
         h(
           'div',
           { className: 'dsh-settings-resize-sliders' },
           h(Slider, {
             domain: WIDTH,
-            label: '宽度',
-            hint: '像素',
+            label: t('width'),
+            name: 'width',
+            unitLabel: t('unitPx'),
             value: state.width,
             onCommit: changeWidth,
             onNotice: setNotice,
+            t: t,
           }),
           h(Slider, {
             domain: HEIGHT,
-            label: '高度',
-            hint: '像素',
+            label: t('height'),
+            name: 'height',
+            unitLabel: t('unitPx'),
             value: state.height,
             onCommit: changeHeight,
             onNotice: setNotice,
+            t: t,
           }),
           h(Slider, {
             domain: TRANSPARENCY,
-            label: '透明度',
-            hint: '百分比',
+            label: t('transparency'),
+            name: 'transparency',
+            unitLabel: t('unitPercent'),
             value: state.transparency,
             onCommit: changeTransparency,
             onNotice: setNotice,
+            t: t,
           }),
         ),
         notice === ''
@@ -865,13 +996,11 @@ html {
           h(
             'span',
             { className: 'dsh-settings-resize-now' },
-            '当前：' +
-              state.width +
-              'px × ' +
-              state.height +
-              'px · 透明度 ' +
-              state.transparency +
-              '%',
+            t('current', {
+              width: state.width,
+              height: state.height,
+              transparency: state.transparency,
+            }),
           ),
           h(
             'button',
@@ -880,14 +1009,10 @@ html {
               disabled: isDefault,
               onClick: reset,
             },
-            '恢复默认',
+            t('reset'),
           ),
         ),
-        h(
-          'div',
-          { className: 'dsh-settings-resize-desc' },
-          '透明度只让弹窗底衬变透，文字与控件保持清晰；拖到 100% 时底衬完全透明，弹窗边缘仍保留一圈描边，方便定位。窗口较小时宽高会自动缩小，不会超出屏幕。',
-        ),
+        h('div', { className: 'dsh-settings-resize-desc' }, t('footnote')),
       )
     }
 
@@ -904,6 +1029,16 @@ html {
         }
       }, 'dsh-settings-resize: style')
 
+      // Both dictionaries in one call, so the row is never half-translated. Registered before
+      // the slot so the first paint already has its text.
+      const locale = ctx.get('locale')
+      if (locale !== undefined) {
+        ctx.effect(
+          () => locale.register(NS, { zh: zh, en: en }),
+          'dsh-settings-resize: zh/en strings',
+        )
+      }
+
       // Apply the remembered state as soon as the plugin starts, and take it back off when
       // the plugin stops, so the shipped dialog returns untouched.
       ctx.effect(
@@ -918,6 +1053,7 @@ html {
 
       // A row inside General settings. The slot is declared by the General section at
       // runtime, so `inject` accounts for any order between the two registrations.
+      // `locale` gives the component a `t` seat and re-renders the row on a language change.
       ctx.effect(
         () =>
           ctx.slots.inject('settings.general.item', () =>
@@ -926,7 +1062,9 @@ html {
                 name: 'settings.general.item',
                 id: 'settings-resize',
                 order: 18,
-                label: () => '设置窗口尺寸',
+                locale: NS,
+                label: () =>
+                  locale === undefined ? 'Settings window size' : locale.bind(NS)('title'),
               },
               Section,
             ),

@@ -76,12 +76,42 @@ assert('exports.apply is a function', typeof exported.apply === 'function')
 
 const effects = []
 const injected = []
+const registered = []
 let registration
+
+// Mirrors the real locale service closely enough to prove the plugin's contract: one
+// `register(ns, {zh, en})` call, a bound translate function, and `{name}` interpolation.
+let activeLocale = 'zh'
+const dictionaries = new Map()
+const localeStub = {
+  register(ns, dicts) {
+    // Re-registration is how a real reload behaves: the previous registration is disposed
+    // with the plugin's fiber before apply() runs again.
+    dictionaries.set(ns, dicts)
+    if (!registered.includes(ns)) registered.push(ns)
+    return () => dictionaries.delete(ns)
+  },
+  bind(ns) {
+    return (key, params) => {
+      const dict = dictionaries.get(ns)
+      if (dict === undefined) return key
+      const template = dict[activeLocale]?.[key] ?? dict.en?.[key] ?? key
+      if (params === undefined) return template
+      return template.replace(/\{(\w+)\}/g, (match, name) =>
+        name in params ? String(params[name]) : match,
+      )
+    }
+  },
+}
+
 const ctx = {
   effect(fn, label) {
     const dispose = fn()
     effects.push({ label, dispose })
     return dispose
+  },
+  get(name) {
+    return name === 'locale' ? localeStub : undefined
   },
   slots: {
     // The real service returns a disposer to the caller's ctx.effect; it is not an
@@ -104,14 +134,59 @@ const start = () => {
   styleEls.length = 0
   effects.length = 0
   injected.length = 0
+  registered.length = 0
   exported.apply(ctx)
 }
 
 // 1. Fresh start: shipped defaults.
 store.clear()
 start()
-assert('three effects registered', effects.length === 3)
+assert('four effects registered (style, locale, variables, slot)', effects.length === 4)
 assert('waits on the General settings slot declaration', injected.join(',') === 'settings.general.item')
+assert('registers exactly one locale namespace', registered.join(',') === 'dsh-settings-resize')
+assert(
+  'both zh and en dictionaries are registered in one call',
+  (() => {
+    const dicts = dictionaries.get('dsh-settings-resize')
+    return dicts !== undefined && dicts.zh !== undefined && dicts.en !== undefined
+  })(),
+)
+assert(
+  'zh and en carry the same keys, so neither can be half-translated',
+  (() => {
+    const dicts = dictionaries.get('dsh-settings-resize')
+    const zk = Object.keys(dicts.zh).sort()
+    const ek = Object.keys(dicts.en).sort()
+    return zk.length === ek.length && zk.every((k, i) => k === ek[i])
+  })(),
+)
+assert(
+  'every UI string comes from the dictionaries, not inline markup',
+  (() => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
+    // Strip comments and the zh dictionary itself, then look for Chinese in any string
+    // literal that could reach the DOM.
+    const withoutBlockComments = source.replace(/\/\*[\s\S]*?\*\//g, '')
+    const withoutLineComments = withoutBlockComments.replace(/^\s*\/\/.*$/gm, '')
+    const dictStart = withoutLineComments.indexOf('const zh = {')
+    const dictEnd = withoutLineComments.indexOf('const en = {')
+    const outsideDict =
+      withoutLineComments.slice(0, dictStart) + withoutLineComments.slice(dictEnd)
+    const chineseLiterals = outsideDict.match(/'[^'\n]*[\u4e00-\u9fff][^'\n]*'/g) || []
+    return chineseLiterals.length === 0
+  })(),
+)
+assert('registration declares the locale namespace', registration.options.locale === 'dsh-settings-resize')
+assert(
+  'the row label follows the active language',
+  (() => {
+    const zhLabel = registration.options.label()
+    activeLocale = 'en'
+    const enLabel = registration.options.label()
+    activeLocale = 'zh'
+    return zhLabel === '设置窗口尺寸' && enLabel === 'Settings window size'
+  })(),
+)
 assert(
   'style element created with stable id',
   styleEls.length === 1 && styleEls[0].id === 'dsh-settings-resize-style',

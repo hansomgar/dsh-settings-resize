@@ -38,6 +38,49 @@ window.__ModuleLoader__.load({
     /** The shipped dialog, and what 恢复默认 restores. */
     const DEFAULT_STATE = { width: 800, height: 800, heightUnit: 'px', transparency: 0 }
 
+    /** Locale namespace, also the entry id in cordis.patch.yml. */
+    const NS = 'dsh-settings-resize'
+
+    /**
+     * Both shipped locales are registered in one call, which the typed form requires:
+     * a missing or extra key is a compile error and a half-translated row is impossible.
+     */
+    const zh = {
+      title: '设置窗口尺寸',
+      description: '拖动滑块调节设置弹窗的宽高与透明度，改动立刻生效并被记住。',
+      width: '宽度',
+      height: '高度',
+      transparency: '透明度',
+      slider: '{label}滑动条',
+      field: '{label}（{unit}）',
+      unitPx: '像素',
+      unitPercent: '百分比',
+      current: '当前：{width}px × {height}px · 透明度 {transparency}%',
+      reset: '恢复默认',
+      noticeInvalid: '请输入数字',
+      noticeClamped: '已按范围截断：{min}–{max}{unit}',
+      footnote:
+        '透明度只让弹窗底衬变透，文字与控件保持清晰；拖到 100% 时底衬完全透明，弹窗边缘仍保留一圈描边，方便定位。窗口较小时宽高会自动缩小，不会超出屏幕。',
+    }
+
+    const en = {
+      title: 'Settings window size',
+      description: 'Drag the sliders to resize the Settings dialog and adjust its transparency. Changes apply immediately and are remembered.',
+      width: 'Width',
+      height: 'Height',
+      transparency: 'Transparency',
+      slider: '{label} slider',
+      field: '{label} ({unit})',
+      unitPx: 'px',
+      unitPercent: '%',
+      current: 'Current: {width}px × {height}px · transparency {transparency}%',
+      reset: 'Reset to default',
+      noticeInvalid: 'Enter a number',
+      noticeClamped: 'Clamped to {min}–{max}{unit}',
+      footnote:
+        'Transparency fades the dialog surface only, so text and controls stay sharp. At 100% the surface is fully clear and a thin outline keeps the dialog edge findable. When the window is small, the size shrinks to fit the screen.',
+    }
+
     const STYLE_TEXT = `
 html {
   --dsh-settings-w: 800px;
@@ -94,7 +137,7 @@ html {
 }
 .dsh-settings-resize-slider > .dsh-settings-resize-name {
   flex: none;
-  width: 48px;
+  min-width: 68px;
 }
 .dsh-settings-resize-slider > input[type="range"] {
   flex: 1 1 120px;
@@ -254,7 +297,7 @@ html {
      * exact value. Both clamp to the domain and report truncation through `onNotice`.
      */
     function Slider(props) {
-      const { domain, label, value, hint, onCommit, onNotice } = props
+      const { domain, label, name, value, unitLabel, onCommit, onNotice, t } = props
       const [draft, setDraft] = useState()
 
       const commitNumber = (raw) => {
@@ -266,12 +309,16 @@ html {
         }
         const parsed = Number(trimmed)
         if (!Number.isFinite(parsed)) {
-          onNotice('请输入数字')
+          onNotice(t('noticeInvalid'))
           return
         }
         const rounded = Math.round(parsed)
         const clamped = clamp(rounded, domain.min, domain.max)
-        onNotice(clamped === rounded ? '' : `已按范围截断：${domain.min}–${domain.max}${domain.unit}`)
+        onNotice(
+          clamped === rounded
+            ? ''
+            : t('noticeClamped', { min: domain.min, max: domain.max, unit: domain.unit }),
+        )
         onCommit(clamped)
       }
 
@@ -285,7 +332,7 @@ html {
           max: domain.max,
           step: domain.step,
           value: value,
-          'aria-label': label + '滑动条',
+          'aria-label': t('slider', { label: label }),
           onChange: (event) => {
             setDraft(undefined)
             onNotice('')
@@ -302,7 +349,7 @@ html {
             max: domain.max,
             step: domain.step,
             value: draft === undefined ? String(value) : draft,
-            'aria-label': label + (hint === undefined ? '' : '（' + hint + '）'),
+            'aria-label': t('field', { label: label, unit: unitLabel }),
             onChange: (event) => {
               commitNumber(event.target.value)
             },
@@ -315,7 +362,10 @@ html {
       )
     }
 
-    function Section() {
+    function Section(props) {
+      // `t` is supplied by the framework through the registration's `locale` option and
+      // re-renders the row when the active language changes.
+      const t = props.t
       const [state, setState] = useState(readStored)
       const [notice, setNotice] = useState('')
       // A pointer drag fires several fields in one tick, so the value the next edit composes
@@ -365,39 +415,41 @@ html {
         h(
           'div',
           null,
-          h('div', { className: 'dsh-settings-resize-title' }, '设置窗口尺寸'),
-          h(
-            'div',
-            { className: 'dsh-settings-resize-desc' },
-            '拖动滑块调节设置弹窗的宽高与透明度，改动立刻生效并被记住。',
-          ),
+          h('div', { className: 'dsh-settings-resize-title' }, t('title')),
+          h('div', { className: 'dsh-settings-resize-desc' }, t('description')),
         ),
         h(
           'div',
           { className: 'dsh-settings-resize-sliders' },
           h(Slider, {
             domain: WIDTH,
-            label: '宽度',
-            hint: '像素',
+            label: t('width'),
+            name: 'width',
+            unitLabel: t('unitPx'),
             value: state.width,
             onCommit: changeWidth,
             onNotice: setNotice,
+            t: t,
           }),
           h(Slider, {
             domain: HEIGHT,
-            label: '高度',
-            hint: '像素',
+            label: t('height'),
+            name: 'height',
+            unitLabel: t('unitPx'),
             value: state.height,
             onCommit: changeHeight,
             onNotice: setNotice,
+            t: t,
           }),
           h(Slider, {
             domain: TRANSPARENCY,
-            label: '透明度',
-            hint: '百分比',
+            label: t('transparency'),
+            name: 'transparency',
+            unitLabel: t('unitPercent'),
             value: state.transparency,
             onCommit: changeTransparency,
             onNotice: setNotice,
+            t: t,
           }),
         ),
         notice === ''
@@ -409,13 +461,11 @@ html {
           h(
             'span',
             { className: 'dsh-settings-resize-now' },
-            '当前：' +
-              state.width +
-              'px × ' +
-              state.height +
-              'px · 透明度 ' +
-              state.transparency +
-              '%',
+            t('current', {
+              width: state.width,
+              height: state.height,
+              transparency: state.transparency,
+            }),
           ),
           h(
             'button',
@@ -424,14 +474,10 @@ html {
               disabled: isDefault,
               onClick: reset,
             },
-            '恢复默认',
+            t('reset'),
           ),
         ),
-        h(
-          'div',
-          { className: 'dsh-settings-resize-desc' },
-          '透明度只让弹窗底衬变透，文字与控件保持清晰；拖到 100% 时底衬完全透明，弹窗边缘仍保留一圈描边，方便定位。窗口较小时宽高会自动缩小，不会超出屏幕。',
-        ),
+        h('div', { className: 'dsh-settings-resize-desc' }, t('footnote')),
       )
     }
 
@@ -448,6 +494,16 @@ html {
         }
       }, 'dsh-settings-resize: style')
 
+      // Both dictionaries in one call, so the row is never half-translated. Registered before
+      // the slot so the first paint already has its text.
+      const locale = ctx.get('locale')
+      if (locale !== undefined) {
+        ctx.effect(
+          () => locale.register(NS, { zh: zh, en: en }),
+          'dsh-settings-resize: zh/en strings',
+        )
+      }
+
       // Apply the remembered state as soon as the plugin starts, and take it back off when
       // the plugin stops, so the shipped dialog returns untouched.
       ctx.effect(
@@ -462,6 +518,7 @@ html {
 
       // A row inside General settings. The slot is declared by the General section at
       // runtime, so `inject` accounts for any order between the two registrations.
+      // `locale` gives the component a `t` seat and re-renders the row on a language change.
       ctx.effect(
         () =>
           ctx.slots.inject('settings.general.item', () =>
@@ -470,7 +527,9 @@ html {
                 name: 'settings.general.item',
                 id: 'settings-resize',
                 order: 18,
-                label: () => '设置窗口尺寸',
+                locale: NS,
+                label: () =>
+                  locale === undefined ? 'Settings window size' : locale.bind(NS)('title'),
               },
               Section,
             ),

@@ -2,15 +2,20 @@
 
 在 DeepSeek Harness 的**设置 → 通用设置**里加三个滑动条，用来调节设置弹窗的宽度、高度和透明度。拖动即刻生效，选择会被记住。
 
+界面文案中英双语，跟随 DSH 的语言设置自动切换。
+
+> Adds three sliders to **Settings → General** that resize the DeepSeek Harness Settings dialog and adjust its transparency. Changes apply immediately and persist across restarts. The UI follows the active DSH language (Chinese or English).
+
 ## 功能
 
 - **宽度 / 高度 / 透明度三个滑动条**：宽度 640–2400 px，高度 480–2160 px，透明度 0–100%。
 - **即时生效**：拖动时正在打开的设置弹窗马上跟着变化，不需要保存或重启。
 - **持久化**：写入 `localStorage` 的 `dsh.settingsResize.v1`，完全退出 DSH 再打开仍然是上次的设置。
+- **中英双语**：文案来自插件内置的 zh / en 字典，在「设置 → 通用 → 语言」里切换即时生效。
 - **恢复默认**：一键回到 DSH 原始的 800 × 800、完全不透明。
 - **不会溢出屏幕**：宽度不超过 `100vw - 48px`，高度不超过 `100vh - 2 * max(24px, var(--dsh-frame-overlay-top, 24px))`，窗口缩小时弹窗被自动夹住。
 - **只作用于设置弹窗**：规则全部挂在 `[data-shortcut-modal="settings"]` 上，其他弹窗、面板和页面不受影响。
-- **可干净停用**：`<style>` 标签、三个 CSS 变量和槽位注册都登记在 `ctx.effect` 的清理函数里，禁用或卸载插件后设置弹窗回到原始状态。
+- **可干净停用**：`<style>` 标签、四个 CSS 变量、槽位注册和语言字典都登记在 `ctx.effect` 的清理函数里，禁用或卸载插件后设置弹窗回到原始状态。
 
 ## 结构
 
