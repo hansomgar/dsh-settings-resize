@@ -82,8 +82,17 @@ html {
 
 ## 安装
 
+从 GitHub 直接安装（推荐）：
+
+```sh
+dsh plugin add https://github.com/hansomgar/dsh-settings-resize
+```
+
+也可以在 DSH 的 **设置 → 插件** 页里填入上面的仓库地址安装。
+
+本地开发时，从工作目录安装：
+
 ```powershell
-# 在 DSH 里：插件页 / plugin_manager 安装本地目录
 pnpm add "file:E:\Data\data_dsh\2026\dsh-settings-resize"
 ```
 

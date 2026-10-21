@@ -349,6 +349,11 @@ html {
   "private": true,
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hansomgar/dsh-settings-resize.git"
+  },
+  "homepage": "https://github.com/hansomgar/dsh-settings-resize#readme",
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
