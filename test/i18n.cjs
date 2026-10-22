@@ -86,7 +86,10 @@ const ctx = {
   effect(fn) {
     return fn()
   },
-  get: (name) => (name === 'locale' ? localeStub : undefined),
+  get locale() {
+    return localeStub
+  },
+  get: () => undefined,
   slots: {
     inject: (key, cb) => cb(),
     register(options, component) {

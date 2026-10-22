@@ -510,6 +510,31 @@ html {
       }
     }
 
+    /**
+     * Take the namespace back from a claim whose disposer is gone.
+     *
+     * The service exposes no way to drop a namespace, so the only lever is `register`'s own
+     * disposer. A claim still owning a language throws on re-registration; reclaiming it
+     * means finding that occupant, releasing it, and retrying. When the service offers no
+     * such access (the shipped one keeps its maps private) this reports failure and the
+     * caller rethrows the original error rather than leaving the row half-translated.
+     *
+     * @returns whether the namespace is free again.
+     */
+    function reclaim(locale) {
+      // `unregister`/`release` are not part of the shipped API; a future one is honoured if
+      // present, otherwise there is nothing to do but report the failure.
+      if (typeof locale.unregister === 'function') {
+        try {
+          locale.unregister(NS)
+          return true
+        } catch {
+          return false
+        }
+      }
+      return false
+    }
+
     function apply(ctx) {
       // The CSS module builds a hashed class for the panel; the data attribute is the only
       // stable handle, so every rule above selects on that.
@@ -528,31 +553,42 @@ html {
       //
       // The locale service keeps one occupant per (namespace, language) and *throws* on a
       // duplicate. A reload can leave an earlier registration behind — an HMR pass re-runs
-      // this module, which resets `registered` to undefined, and the previous generation's
-      // disposer may not have fired yet. An uncaught throw here would abort the effect and
-      // leave the namespace without its `zh` dictionary, so lookups fall through to the `en`
-      // fallback and the row can switch to English but never back to Chinese. Release what
-      // we own first, then take the namespace over even if a stale claim survives.
-      const locale = ctx.get('locale')
-      if (locale !== undefined) {
-        ctx.effect(() => {
-          // Release whatever an earlier generation of this module left behind, then claim
-          // the namespace. Without this, the duplicate claim throws and the `zh` dictionary
-          // never lands, so the row switches to English but cannot switch back.
-          releaseDictionaries()
-          const dispose = locale.register(NS, { zh: zh, en: en })
-          const host = typeof globalThis !== 'undefined' ? globalThis : undefined
-          if (host !== undefined) host[DISPOSER_KEY] = dispose
-          return () => {
-            // Only the generation that still owns the claim may release it. A retiring
-            // fiber can run its cleanup after the next generation has already re-registered,
-            // and releasing unconditionally would delete the fresh dictionaries.
-            const owner = host !== undefined && host[DISPOSER_KEY] === dispose
-            if (owner) delete host[DISPOSER_KEY]
-            if (owner) dispose()
-          }
-        }, 'dsh-settings-resize: zh/en strings')
-      }
+      // this module, which resets module state, and the previous generation's disposer may
+      // not have fired yet. An uncaught throw here would abort the effect and leave the
+      // namespace without its `zh` dictionary, so lookups fall through to the `en` fallback
+      // and the row can switch to English but never back to Chinese. Release what we own
+      // first, then take the namespace over even if a stale claim survives.
+      //
+      // `locale` is a declared dependency, so it cannot be absent here. Registering outside
+      // any "is the service there yet" branch is deliberate: skipping registration silently
+      // is exactly what made the row come up in English after a restart.
+      const locale = ctx.locale
+      ctx.effect(() => {
+        // Release whatever an earlier generation of this module left behind, then claim
+        // the namespace. Without this, the duplicate claim throws and the `zh` dictionary
+        // never lands, so the row switches to English but cannot switch back.
+        releaseDictionaries()
+        // A stale claim can still outlive its disposer (a page restored from bfcache, or a
+        // generation whose global was dropped). Drop the namespace and retry once rather
+        // than leaving the row dictionary-less.
+        let dispose
+        try {
+          dispose = locale.register(NS, { zh: zh, en: en })
+        } catch (error) {
+          if (!reclaim(locale)) throw error
+          dispose = locale.register(NS, { zh: zh, en: en })
+        }
+        const host = typeof globalThis !== 'undefined' ? globalThis : undefined
+        if (host !== undefined) host[DISPOSER_KEY] = dispose
+        return () => {
+          // Only the generation that still owns the claim may release it. A retiring
+          // fiber can run its cleanup after the next generation has already re-registered,
+          // and releasing unconditionally would delete the fresh dictionaries.
+          const owner = host !== undefined && host[DISPOSER_KEY] === dispose
+          if (owner) delete host[DISPOSER_KEY]
+          if (owner) dispose()
+        }
+      }, 'dsh-settings-resize: zh/en strings')
 
       // Apply the remembered state as soon as the plugin starts, and take it back off when
       // the plugin stops, so the shipped dialog returns untouched.
@@ -578,8 +614,8 @@ html {
                 id: 'settings-resize',
                 order: 18,
                 locale: NS,
-                label: () =>
-                  locale === undefined ? 'Settings window size' : locale.bind(NS)('title'),
+                // Read at projection time, so the nav text follows the active language.
+                label: () => locale.bind(NS)('title'),
               },
               Section,
             ),
@@ -590,7 +626,17 @@ html {
 
     return {
       name: 'dsh-settings-resize',
-      inject: ['slots'],
+      /**
+       * `locale` must be a hard dependency, not something `apply` probes with `ctx.get`.
+       *
+       * A cold page has no ordering guarantee between this plugin and the locale plugin.
+       * When this plugin started first, `ctx.get('locale')` returned undefined, the
+       * dictionaries were never registered, and the row then rendered through a `t` with no
+       * dictionary at all — raw keys on screen, or English once only `en` resolved. Declaring
+       * the dependency makes the loader hold this plugin inactive until the service exists,
+       * so `apply` always sees a live locale service.
+       */
+      inject: ['slots', 'locale'],
       apply: apply,
     }
   },

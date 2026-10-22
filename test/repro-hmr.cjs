@@ -97,7 +97,10 @@ function makeFiber(tag) {
       disposers.push(d)
       return d
     },
-    get: (n) => (n === 'locale' ? locale : undefined),
+    get locale() {
+      return locale
+    },
+    get: () => undefined,
     slots: {
       inject: (k, cb) => cb(),
       register(options, component) {

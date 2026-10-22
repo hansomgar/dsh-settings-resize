@@ -71,7 +71,11 @@ assert('module id is dsh-settings-resize', mods.length === 1 && mods[0].id === '
 
 const exported = mods[0].factory(requireStub)
 assert('exports.name', exported.name === 'dsh-settings-resize')
-assert('exports.inject is [slots]', JSON.stringify(exported.inject) === '["slots"]')
+assert(
+  'exports.inject declares slots and locale',
+  JSON.stringify(exported.inject) === '["slots","locale"]',
+  JSON.stringify(exported.inject),
+)
 assert('exports.apply is a function', typeof exported.apply === 'function')
 
 const effects = []
@@ -111,7 +115,10 @@ const ctx = {
     return dispose
   },
   get(name) {
-    return name === 'locale' ? localeStub : undefined
+    return undefined
+  },
+  get locale() {
+    return localeStub
   },
   slots: {
     // The real service returns a disposer to the caller's ctx.effect; it is not an

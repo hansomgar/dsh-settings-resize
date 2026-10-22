@@ -299,6 +299,68 @@ DSH 内置语言只有 zh 与 en 两个（源码 LOCALE_IDS = ["zh", "en"]）。
     'locale namespace "dsh-settings-resize" already has locale "zh"'
   说明这个测试确实能抓住本 bug，不是摆设。
 
+================================================================================
+四之四、【已修复的 bug】重启 DSH 后变成英文且切不回中文
+================================================================================
+
+现象：完全退出 DSH 再启动，设置 → 通用里本插件那一行显示英文，
+即使 DSH 语言设置是中文；而且此时怎么切换语言都不生效。
+
+注意这与「四之三」是两个不同的 bug，症状相似但成因不同：
+  四之三 发生在热重载（HMR），运行时切语言时字典被误删；
+  本节   发生在冷启动，插件启动时压根没拿到 locale 服务。
+
+根因：
+
+  插件原来只声明 inject: ['slots']，然后在 apply 里用 ctx.get('locale') 去“探测”
+  语言服务在不在。冷启动时页面里各插件的启动顺序没有保证——
+  本插件完全可能先于 locale 插件启动，这时 ctx.get('locale') 返回 undefined：
+
+    const locale = ctx.get('locale')
+    if (locale !== undefined) { ctx.effect(...) }   // ← 整个分支被跳过
+
+  于是：字典从未注册 → 槽位却仍然声明了 locale: NS → 框架注入的 t
+  找不到任何字典 → 查找回落到 en（内置字典）或直接显示原始 key。
+  这就解释了“重启后是英文”：en 是兜底语言，不是用户选的语言。
+
+  更隐蔽的是：这个失败是静默的。没有抛错、没有控制台警告，
+  因为 `if (locale !== undefined)` 把一切吞掉了。
+
+修复（两处，必须同时满足）：
+
+1) 把 locale 声明为硬依赖，而不是运行时探测：
+
+     return {
+       name: 'dsh-settings-resize',
+       inject: ['slots', 'locale'],   // ← locale 必须有
+       apply: apply,
+     }
+
+   声明为依赖后，Loader 会让本插件保持 inactive 直到该服务就绪，
+   因此 apply 执行时 locale 一定存在，不存在“探测不到”的窗口。
+
+2) apply 里直接读 ctx.locale，不再探测：
+
+     const locale = ctx.locale
+
+   保留 `if (locale !== undefined)` 只会掩盖将来同类问题。
+
+【禁止】
+- 不要退回 inject: ['slots'] 再用 ctx.get('locale') 探测。
+  这正是本 bug 的成因，而且失败是静默的，很难发现。
+- 不要把 locale 相关的 effect 包在“服务存在才执行”的分支里。
+  槽位注册一旦声明了 locale: NS，就必须保证字典真的注册上，
+  否则 t 会静默回落到 en。
+
+验证方式（test/repro-coldstart.cjs，9 项断言）：
+  · 断言 inject 里含 'locale'
+  · 断言 apply 源码读的是 ctx.locale、且不含 ctx.get('locale')
+  · 用带中文的桩服务跑一遍：首屏是中文、行标签中文、
+    能切到英文、能切回中文、槽位声明了 locale 命名空间
+  已实测：把 inject 改回 ['slots'] 并恢复 ctx.get 探测，
+  该测试会在“declares locale as a hard dependency”处失败。
+
+
 
 ================================================================================
 五、为什么砍掉单位下拉（记录决策，勿改回）
@@ -607,7 +669,7 @@ export function apply() {}
 </svg>
 
 ------------------------------------------------------------------
-文件 7：client/client.js（完整，597 行，逐字照抄）
+文件 7：client/client.js（完整，643 行，逐字照抄）
 ------------------------------------------------------------------
 /**
  * Client half of dsh-settings-resize.
@@ -1121,6 +1183,31 @@ html {
       }
     }
 
+    /**
+     * Take the namespace back from a claim whose disposer is gone.
+     *
+     * The service exposes no way to drop a namespace, so the only lever is `register`'s own
+     * disposer. A claim still owning a language throws on re-registration; reclaiming it
+     * means finding that occupant, releasing it, and retrying. When the service offers no
+     * such access (the shipped one keeps its maps private) this reports failure and the
+     * caller rethrows the original error rather than leaving the row half-translated.
+     *
+     * @returns whether the namespace is free again.
+     */
+    function reclaim(locale) {
+      // `unregister`/`release` are not part of the shipped API; a future one is honoured if
+      // present, otherwise there is nothing to do but report the failure.
+      if (typeof locale.unregister === 'function') {
+        try {
+          locale.unregister(NS)
+          return true
+        } catch {
+          return false
+        }
+      }
+      return false
+    }
+
     function apply(ctx) {
       // The CSS module builds a hashed class for the panel; the data attribute is the only
       // stable handle, so every rule above selects on that.
@@ -1139,31 +1226,42 @@ html {
       //
       // The locale service keeps one occupant per (namespace, language) and *throws* on a
       // duplicate. A reload can leave an earlier registration behind — an HMR pass re-runs
-      // this module, which resets `registered` to undefined, and the previous generation's
-      // disposer may not have fired yet. An uncaught throw here would abort the effect and
-      // leave the namespace without its `zh` dictionary, so lookups fall through to the `en`
-      // fallback and the row can switch to English but never back to Chinese. Release what
-      // we own first, then take the namespace over even if a stale claim survives.
-      const locale = ctx.get('locale')
-      if (locale !== undefined) {
-        ctx.effect(() => {
-          // Release whatever an earlier generation of this module left behind, then claim
-          // the namespace. Without this, the duplicate claim throws and the `zh` dictionary
-          // never lands, so the row switches to English but cannot switch back.
-          releaseDictionaries()
-          const dispose = locale.register(NS, { zh: zh, en: en })
-          const host = typeof globalThis !== 'undefined' ? globalThis : undefined
-          if (host !== undefined) host[DISPOSER_KEY] = dispose
-          return () => {
-            // Only the generation that still owns the claim may release it. A retiring
-            // fiber can run its cleanup after the next generation has already re-registered,
-            // and releasing unconditionally would delete the fresh dictionaries.
-            const owner = host !== undefined && host[DISPOSER_KEY] === dispose
-            if (owner) delete host[DISPOSER_KEY]
-            if (owner) dispose()
-          }
-        }, 'dsh-settings-resize: zh/en strings')
-      }
+      // this module, which resets module state, and the previous generation's disposer may
+      // not have fired yet. An uncaught throw here would abort the effect and leave the
+      // namespace without its `zh` dictionary, so lookups fall through to the `en` fallback
+      // and the row can switch to English but never back to Chinese. Release what we own
+      // first, then take the namespace over even if a stale claim survives.
+      //
+      // `locale` is a declared dependency, so it cannot be absent here. Registering outside
+      // any "is the service there yet" branch is deliberate: skipping registration silently
+      // is exactly what made the row come up in English after a restart.
+      const locale = ctx.locale
+      ctx.effect(() => {
+        // Release whatever an earlier generation of this module left behind, then claim
+        // the namespace. Without this, the duplicate claim throws and the `zh` dictionary
+        // never lands, so the row switches to English but cannot switch back.
+        releaseDictionaries()
+        // A stale claim can still outlive its disposer (a page restored from bfcache, or a
+        // generation whose global was dropped). Drop the namespace and retry once rather
+        // than leaving the row dictionary-less.
+        let dispose
+        try {
+          dispose = locale.register(NS, { zh: zh, en: en })
+        } catch (error) {
+          if (!reclaim(locale)) throw error
+          dispose = locale.register(NS, { zh: zh, en: en })
+        }
+        const host = typeof globalThis !== 'undefined' ? globalThis : undefined
+        if (host !== undefined) host[DISPOSER_KEY] = dispose
+        return () => {
+          // Only the generation that still owns the claim may release it. A retiring
+          // fiber can run its cleanup after the next generation has already re-registered,
+          // and releasing unconditionally would delete the fresh dictionaries.
+          const owner = host !== undefined && host[DISPOSER_KEY] === dispose
+          if (owner) delete host[DISPOSER_KEY]
+          if (owner) dispose()
+        }
+      }, 'dsh-settings-resize: zh/en strings')
 
       // Apply the remembered state as soon as the plugin starts, and take it back off when
       // the plugin stops, so the shipped dialog returns untouched.
@@ -1189,8 +1287,8 @@ html {
                 id: 'settings-resize',
                 order: 18,
                 locale: NS,
-                label: () =>
-                  locale === undefined ? 'Settings window size' : locale.bind(NS)('title'),
+                // Read at projection time, so the nav text follows the active language.
+                label: () => locale.bind(NS)('title'),
               },
               Section,
             ),
@@ -1201,7 +1299,17 @@ html {
 
     return {
       name: 'dsh-settings-resize',
-      inject: ['slots'],
+      /**
+       * `locale` must be a hard dependency, not something `apply` probes with `ctx.get`.
+       *
+       * A cold page has no ordering guarantee between this plugin and the locale plugin.
+       * When this plugin started first, `ctx.get('locale')` returned undefined, the
+       * dictionaries were never registered, and the row then rendered through a `t` with no
+       * dictionary at all — raw keys on screen, or English once only `en` resolved. Declaring
+       * the dependency makes the loader hold this plugin inactive until the service exists,
+       * so `apply` always sees a live locale service.
+       */
+      inject: ['slots', 'locale'],
       apply: apply,
     }
   },
