@@ -42,6 +42,17 @@ window.__ModuleLoader__.load({
     const NS = 'dsh-settings-resize'
 
     /**
+     * Key holding the dictionaries' disposer on `globalThis`.
+     *
+     * The locale service keeps one occupant per (namespace, language) and throws on a
+     * duplicate, and it exposes no way to release a claim except the disposer `register`
+     * returned. That disposer has to outlive this module: an HMR pass re-executes the
+     * bundle, so a module-scoped variable resets while the previous generation's claim is
+     * still live. Parking it on the global lets the next generation release it first.
+     */
+    const DISPOSER_KEY = '__dshSettingsResizeLocale'
+
+    /**
      * Both shipped locales are registered in one call, which the typed form requires:
      * a missing or extra key is a compile error and a half-translated row is impossible.
      */
@@ -481,6 +492,24 @@ html {
       )
     }
 
+    /**
+     * Drop dictionaries an earlier generation of this module registered. The disposer is
+     * parked on `globalThis` precisely because an HMR reload resets this module's scope.
+     */
+    function releaseDictionaries() {
+      const host = typeof globalThis !== 'undefined' ? globalThis : undefined
+      if (host === undefined) return
+      const previous = host[DISPOSER_KEY]
+      if (typeof previous !== 'function') return
+      delete host[DISPOSER_KEY]
+      try {
+        previous()
+      } catch {
+        // A disposer from a torn-down generation may already have run; the claim is what
+        // matters, and the register call below re-establishes it.
+      }
+    }
+
     function apply(ctx) {
       // The CSS module builds a hashed class for the panel; the data attribute is the only
       // stable handle, so every rule above selects on that.
@@ -496,12 +525,33 @@ html {
 
       // Both dictionaries in one call, so the row is never half-translated. Registered before
       // the slot so the first paint already has its text.
+      //
+      // The locale service keeps one occupant per (namespace, language) and *throws* on a
+      // duplicate. A reload can leave an earlier registration behind — an HMR pass re-runs
+      // this module, which resets `registered` to undefined, and the previous generation's
+      // disposer may not have fired yet. An uncaught throw here would abort the effect and
+      // leave the namespace without its `zh` dictionary, so lookups fall through to the `en`
+      // fallback and the row can switch to English but never back to Chinese. Release what
+      // we own first, then take the namespace over even if a stale claim survives.
       const locale = ctx.get('locale')
       if (locale !== undefined) {
-        ctx.effect(
-          () => locale.register(NS, { zh: zh, en: en }),
-          'dsh-settings-resize: zh/en strings',
-        )
+        ctx.effect(() => {
+          // Release whatever an earlier generation of this module left behind, then claim
+          // the namespace. Without this, the duplicate claim throws and the `zh` dictionary
+          // never lands, so the row switches to English but cannot switch back.
+          releaseDictionaries()
+          const dispose = locale.register(NS, { zh: zh, en: en })
+          const host = typeof globalThis !== 'undefined' ? globalThis : undefined
+          if (host !== undefined) host[DISPOSER_KEY] = dispose
+          return () => {
+            // Only the generation that still owns the claim may release it. A retiring
+            // fiber can run its cleanup after the next generation has already re-registered,
+            // and releasing unconditionally would delete the fresh dictionaries.
+            const owner = host !== undefined && host[DISPOSER_KEY] === dispose
+            if (owner) delete host[DISPOSER_KEY]
+            if (owner) dispose()
+          }
+        }, 'dsh-settings-resize: zh/en strings')
       }
 
       // Apply the remembered state as soon as the plugin starts, and take it back off when

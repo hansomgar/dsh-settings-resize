@@ -225,6 +225,82 @@ DSH 内置语言只有 zh 与 en 两个（源码 LOCALE_IDS = ["zh", "en"]）。
 让「透明度」和 Transparency 都能容纳；更长的词也能撑开而不被截断。
 
 ================================================================================
+四之三、【已修复的 bug】切回中文不生效（必须按此实现，否则会重现）
+================================================================================
+
+现象：在「设置 → 通用 → 语言」里从中文切到英文，本插件的行实时变英文；
+再切回中文，本插件的行仍然是英文，不跟着变。其他内置设置项正常。
+
+根因（读 LocaleRuntime 源码 + 用真实服务复现确认）：
+
+  register(ns, { zh, en }) 是「单一占用者」语义：
+    for (const [locale] of pairs)
+      if (locales.has(localeKey(locale)))
+        throw new Error(`locale namespace "ns" already has locale "zh"`)
+
+  也就是说：同一个 (命名空间, 语言) 只能注册一次，重复注册直接抛错。
+  而 locale 服务不暴露任何撤销 API，唯一释放途径就是 register 返回的 disposer。
+
+  于是当 apply 被第二次执行（HMR 重载、或旧 fiber 的清理尚未执行就重新 apply）时：
+    1. 上一次注册的 zh/en 还占着命名空间；
+    2. 新的 register 抛错；
+    3. 这个 throw 让整个 locale effect 失败，新字典没进去；
+    4. 更糟的是旧字典此时可能已被旧 fiber 清掉；
+    5. 结果：命名空间里没有 zh，查找沿 fallback 链落到 en。
+  → 英文能显示（en 命中），中文永远显示不出来（zh 缺失，回落到 en）。
+
+  这解释了「单向切换」这个看似诡异的现象：不是渲染没刷新，是字典丢了。
+
+修复（client.js 里已有，不要改回裸 register）：
+
+  const DISPOSER_KEY = '__dshSettingsResizeLocale'
+
+  function releaseDictionaries() {
+    const host = typeof globalThis !== 'undefined' ? globalThis : undefined
+    if (host === undefined) return
+    const previous = host[DISPOSER_KEY]
+    if (typeof previous !== 'function') return
+    delete host[DISPOSER_KEY]
+    try { previous() } catch {}
+  }
+
+  ctx.effect(() => {
+    releaseDictionaries()                       // ← 先释放上一代留下的占用
+    const dispose = locale.register(NS, { zh, en })
+    const host = globalThis
+    host[DISPOSER_KEY] = dispose                // ← 挂在全局，模块重载也不丢
+    return () => {
+      // 只有仍持有占用的那一代才能释放；
+      // 退休 fiber 的清理可能晚于新一代的注册，无条件释放会删掉新字典。
+      const owner = host[DISPOSER_KEY] === dispose
+      if (owner) { delete host[DISPOSER_KEY]; dispose() }
+    }
+  }, 'dsh-settings-resize: zh/en strings')
+
+三个关键点，缺一不可：
+
+1) disposer 必须挂在 globalThis，不能用模块级变量。
+   HMR 会重新执行整个模块，模块级变量被重置为 undefined，
+   而上一代的占用仍然存活 —— 那样就永远释放不掉，必然重现本 bug。
+
+2) 注册前必须先 releaseDictionaries()，否则重复注册抛错。
+
+3) 清理时必须判断「自己是否仍是 owner」再释放。
+   重载时新一代先 apply 并写入 globalThis，
+   随后退休 fiber 的清理才执行；若它无条件 dispose()，
+   会把新一代刚注册的字典删掉，表现同样是「切回中文失效」。
+
+验证方式（test/repro-hmr.cjs，11 项断言）：
+  它从 app.asar 里抽出真实的 LocaleRuntime 类来跑，覆盖三个场景：
+    A 普通切换：zh→en→zh
+    B HMR 重载：新一代 apply 后，退休旧 fiber，再双向切换
+    C 残留占用：globalThis 上的 disposer 被抹掉（模拟模块重置）后再次 apply
+  已实测：把修复改回裸 register()，场景 B 会直接抛出
+    'locale namespace "dsh-settings-resize" already has locale "zh"'
+  说明这个测试确实能抓住本 bug，不是摆设。
+
+
+================================================================================
 五、为什么砍掉单位下拉（记录决策，勿改回）
 ================================================================================
 
@@ -531,7 +607,7 @@ export function apply() {}
 </svg>
 
 ------------------------------------------------------------------
-文件 7：client/client.js（完整，547 行，逐字照抄）
+文件 7：client/client.js（完整，597 行，逐字照抄）
 ------------------------------------------------------------------
 /**
  * Client half of dsh-settings-resize.
@@ -575,6 +651,17 @@ window.__ModuleLoader__.load({
 
     /** Locale namespace, also the entry id in cordis.patch.yml. */
     const NS = 'dsh-settings-resize'
+
+    /**
+     * Key holding the dictionaries' disposer on `globalThis`.
+     *
+     * The locale service keeps one occupant per (namespace, language) and throws on a
+     * duplicate, and it exposes no way to release a claim except the disposer `register`
+     * returned. That disposer has to outlive this module: an HMR pass re-executes the
+     * bundle, so a module-scoped variable resets while the previous generation's claim is
+     * still live. Parking it on the global lets the next generation release it first.
+     */
+    const DISPOSER_KEY = '__dshSettingsResizeLocale'
 
     /**
      * Both shipped locales are registered in one call, which the typed form requires:
@@ -1016,6 +1103,24 @@ html {
       )
     }
 
+    /**
+     * Drop dictionaries an earlier generation of this module registered. The disposer is
+     * parked on `globalThis` precisely because an HMR reload resets this module's scope.
+     */
+    function releaseDictionaries() {
+      const host = typeof globalThis !== 'undefined' ? globalThis : undefined
+      if (host === undefined) return
+      const previous = host[DISPOSER_KEY]
+      if (typeof previous !== 'function') return
+      delete host[DISPOSER_KEY]
+      try {
+        previous()
+      } catch {
+        // A disposer from a torn-down generation may already have run; the claim is what
+        // matters, and the register call below re-establishes it.
+      }
+    }
+
     function apply(ctx) {
       // The CSS module builds a hashed class for the panel; the data attribute is the only
       // stable handle, so every rule above selects on that.
@@ -1031,12 +1136,33 @@ html {
 
       // Both dictionaries in one call, so the row is never half-translated. Registered before
       // the slot so the first paint already has its text.
+      //
+      // The locale service keeps one occupant per (namespace, language) and *throws* on a
+      // duplicate. A reload can leave an earlier registration behind — an HMR pass re-runs
+      // this module, which resets `registered` to undefined, and the previous generation's
+      // disposer may not have fired yet. An uncaught throw here would abort the effect and
+      // leave the namespace without its `zh` dictionary, so lookups fall through to the `en`
+      // fallback and the row can switch to English but never back to Chinese. Release what
+      // we own first, then take the namespace over even if a stale claim survives.
       const locale = ctx.get('locale')
       if (locale !== undefined) {
-        ctx.effect(
-          () => locale.register(NS, { zh: zh, en: en }),
-          'dsh-settings-resize: zh/en strings',
-        )
+        ctx.effect(() => {
+          // Release whatever an earlier generation of this module left behind, then claim
+          // the namespace. Without this, the duplicate claim throws and the `zh` dictionary
+          // never lands, so the row switches to English but cannot switch back.
+          releaseDictionaries()
+          const dispose = locale.register(NS, { zh: zh, en: en })
+          const host = typeof globalThis !== 'undefined' ? globalThis : undefined
+          if (host !== undefined) host[DISPOSER_KEY] = dispose
+          return () => {
+            // Only the generation that still owns the claim may release it. A retiring
+            // fiber can run its cleanup after the next generation has already re-registered,
+            // and releasing unconditionally would delete the fresh dictionaries.
+            const owner = host !== undefined && host[DISPOSER_KEY] === dispose
+            if (owner) delete host[DISPOSER_KEY]
+            if (owner) dispose()
+          }
+        }, 'dsh-settings-resize: zh/en strings')
       }
 
       // Apply the remembered state as soon as the plugin starts, and take it back off when
