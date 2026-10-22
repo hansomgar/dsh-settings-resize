@@ -4,6 +4,8 @@
 
 界面文案中英双语，跟随 DSH 的语言设置自动切换。
 
+中文 | [English](README.en.md)
+
 > Adds three sliders to **Settings → General** that resize the DeepSeek Harness Settings dialog and adjust its transparency. Changes apply immediately and persist across restarts. The UI follows the active DSH language (Chinese or English).
 
 ## 功能
