@@ -96,6 +96,19 @@ const service = ctx.dshSettingsResizeModels
 check('host exposes the model switch service', service !== undefined)
 check('applying the plugin wraps listModels', registry.listModels !== undefined)
 
+// The settings service only persists volatile fields; without `.volatile()` every write is
+// refused with `Plugin entry "<id>" has no volatile fields`. Both stored fields need it.
+const configShape = host.Config?.dict ?? host.Config?._dict ?? {}
+const volatileFields = Object.entries(configShape)
+  .filter(([, field]) => (field?.meta ?? field?._meta ?? {}).volatile === true)
+  .map(([name]) => name)
+  .sort()
+check(
+  'both stored fields are volatile, so the settings service accepts writes',
+  volatileFields.join(',') === 'disabledModels,disabledProviders',
+  volatileFields.join(',') || '(none)',
+)
+
 const pickerIds = async (provider) => (await registry.listModels(provider)).map((m) => m.id)
 
 check(
