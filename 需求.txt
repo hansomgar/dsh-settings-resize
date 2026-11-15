@@ -511,39 +511,68 @@ html {
   line-height: 18px;
   color: var(--dsw-alias-state-warn-primary);
 }
-.dsh-settings-resize-model-block {
+.dsh-settings-resize-rowgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: .5px solid var(--dsw-alias-border-l2);
+}
+.dsh-settings-resize-rowgroup-label {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: .5px solid var(--dsw-alias-border-l2);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
 }
-.dsh-settings-resize-model-block-head {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  padding-bottom: 2px;
-}
-.dsh-settings-resize-model-block-title {
+.dsh-settings-resize-rowgroup-note {
   font-size: 12px;
   line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-settings-resize-rowgroup-count {
   color: var(--dsw-alias-label-secondary);
 }
-.dsh-settings-resize-model-block-hint {
-  font-size: 12px;
-  line-height: 18px;
+.dsh-settings-resize-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-settings-resize-model-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.dsh-settings-resize-model-row[data-disabled] .dsh-settings-resize-model-name {
+  opacity: .6;
+}
+.dsh-settings-resize-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-settings-resize-model-note {
+  font-size: 11px;
+  line-height: 16px;
   color: var(--dsw-alias-label-tertiary);
 }
 .dsh-settings-resize-restore-all {
   display: flex;
   justify-content: flex-end;
-  padding-top: 8px;
+  padding-top: 10px;
 }
 .dsh-settings-resize-restore-all button {
   height: 28px;
-  padding: 0 10px;
+  padding: 0 12px;
   border: .5px solid var(--dsw-alias-border-l4);
   border-radius: var(--dsw-radius-md);
   background: transparent;
@@ -558,25 +587,6 @@ html {
 .dsh-settings-resize-restore-all button:disabled {
   opacity: .45;
   cursor: default;
-}
-.dsh-settings-resize-model-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 34px;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--dsw-alias-label-primary);
-}
-.dsh-settings-resize-model-row[data-disabled] .dsh-settings-resize-model-name {
-  opacity: .5;
-}
-.dsh-settings-resize-model-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
 }
 .dsh-settings-resize-model-badge {
   flex: none;
@@ -1199,18 +1209,27 @@ window.__ModuleLoader__.load({
 
       const offCount = models.filter((model) => keys.has(providerId + '\u0000' + model.id)).length
 
+      /*
+       * Layout follows the card's own rows: a label column on the left, the control on the
+       * right, with the explanatory line under the label — the shape the rest of this page
+       * uses for a setting. The switch is the same 34×20 pill as elsewhere in Settings, so it
+       * reads as part of the page rather than as an inserted panel.
+       */
       return h(
         'div',
-        { className: 'dsh-settings-resize-model-block' },
+        { className: 'dsh-settings-resize-rowgroup' },
         h(
           'div',
-          { className: 'dsh-settings-resize-model-block-head' },
-          h('span', { className: 'dsh-settings-resize-model-block-title' }, t('modelSwitchTitle')),
-          h(
-            'span',
-            { className: 'dsh-settings-resize-model-block-hint' },
-            offCount === 0 ? t('modelSwitchHintAll') : t('modelSwitchHintOff', { count: offCount }),
-          ),
+          { className: 'dsh-settings-resize-rowgroup-label' },
+          t('modelSwitchTitle'),
+          h('span', { className: 'dsh-settings-resize-rowgroup-note' }, t('modelSwitchHint')),
+          offCount === 0
+            ? null
+            : h(
+                'span',
+                { className: 'dsh-settings-resize-rowgroup-note dsh-settings-resize-rowgroup-count' },
+                t('modelSwitchHintOff', { count: offCount }),
+              ),
         ),
         notice === ''
           ? null
@@ -1226,12 +1245,14 @@ window.__ModuleLoader__.load({
               'data-disabled': off ? 'true' : undefined,
             },
             h(
-              'span',
-              { className: 'dsh-settings-resize-model-name' },
-              model.name,
-              off
-                ? h('span', { className: 'dsh-settings-resize-model-badge' }, t('modelDisabledBadge'))
-                : null,
+              'div',
+              { className: 'dsh-settings-resize-model-text' },
+              h('span', { className: 'dsh-settings-resize-model-name' }, model.name),
+              h(
+                'span',
+                { className: 'dsh-settings-resize-model-note' },
+                off ? t('modelRowNoteOff') : t('modelRowNoteOn'),
+              ),
             ),
             h(
               'button',
@@ -1324,12 +1345,13 @@ window.__ModuleLoader__.load({
       noticeClamped: '已按范围截断：{min}–{max}{unit}',
       footnote:
         '透明度只让弹窗底衬变透，文字与控件保持清晰；拖到 100% 时底衬完全透明，弹窗边缘仍保留一圈描边，方便定位。窗口较小时宽高会自动缩小，不会超出屏幕。',
-      modelSwitchTitle: '开关',
-      modelSwitchHintAll: '全部模型都会出现在模型选择器中。',
-      modelSwitchHintOff: '{count} 个模型已从模型选择器中隐藏，此处仍可管理。',
+      modelSwitchTitle: '在对话中显示',
+      modelSwitchHint: '关闭后该模型不再出现在对话的模型选择器中，此处仍可随时打开。',
+      modelSwitchHintOff: '已关闭 {count} 个',
+      modelRowNoteOn: '会出现在模型选择器中',
+      modelRowNoteOff: '已从模型选择器中隐藏',
       modelEnable: '启用',
       modelDisable: '关闭',
-      modelDisabledBadge: '已隐藏',
       modelRestoreAll: '全部恢复（{count}）',
       modelWriteFailed: '写入失败：{message}',
     }
@@ -1350,13 +1372,14 @@ window.__ModuleLoader__.load({
       noticeClamped: 'Clamped to {min}–{max}{unit}',
       footnote:
         'Transparency fades the dialog surface only, so text and controls stay sharp. At 100% the surface is fully clear and a thin outline keeps the dialog edge findable. When the window is small, the size shrinks to fit the screen.',
-      modelSwitchTitle: 'Switches',
-      modelSwitchHintAll: 'Every model appears in the model picker.',
-      modelSwitchHintOff:
-        '{count} model(s) hidden from the model picker; they stay listed and manageable here.',
+      modelSwitchTitle: 'Show in conversation',
+      modelSwitchHint:
+        'When off, the model is left out of the conversation model picker. It stays listed here and can be turned back on at any time.',
+      modelSwitchHintOff: '{count} off',
+      modelRowNoteOn: 'Offered in the model picker',
+      modelRowNoteOff: 'Hidden from the model picker',
       modelEnable: 'On',
       modelDisable: 'Off',
-      modelDisabledBadge: 'Hidden',
       modelRestoreAll: 'Restore all ({count})',
       modelWriteFailed: 'Write failed: {message}',
     }
@@ -1490,39 +1513,68 @@ html {
   line-height: 18px;
   color: var(--dsw-alias-state-warn-primary);
 }
-.dsh-settings-resize-model-block {
+.dsh-settings-resize-rowgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: .5px solid var(--dsw-alias-border-l2);
+}
+.dsh-settings-resize-rowgroup-label {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: .5px solid var(--dsw-alias-border-l2);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
 }
-.dsh-settings-resize-model-block-head {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  padding-bottom: 2px;
-}
-.dsh-settings-resize-model-block-title {
+.dsh-settings-resize-rowgroup-note {
   font-size: 12px;
   line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-settings-resize-rowgroup-count {
   color: var(--dsw-alias-label-secondary);
 }
-.dsh-settings-resize-model-block-hint {
-  font-size: 12px;
-  line-height: 18px;
+.dsh-settings-resize-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-settings-resize-model-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.dsh-settings-resize-model-row[data-disabled] .dsh-settings-resize-model-name {
+  opacity: .6;
+}
+.dsh-settings-resize-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-settings-resize-model-note {
+  font-size: 11px;
+  line-height: 16px;
   color: var(--dsw-alias-label-tertiary);
 }
 .dsh-settings-resize-restore-all {
   display: flex;
   justify-content: flex-end;
-  padding-top: 8px;
+  padding-top: 10px;
 }
 .dsh-settings-resize-restore-all button {
   height: 28px;
-  padding: 0 10px;
+  padding: 0 12px;
   border: .5px solid var(--dsw-alias-border-l4);
   border-radius: var(--dsw-radius-md);
   background: transparent;
@@ -1537,25 +1589,6 @@ html {
 .dsh-settings-resize-restore-all button:disabled {
   opacity: .45;
   cursor: default;
-}
-.dsh-settings-resize-model-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 34px;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--dsw-alias-label-primary);
-}
-.dsh-settings-resize-model-row[data-disabled] .dsh-settings-resize-model-name {
-  opacity: .5;
-}
-.dsh-settings-resize-model-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
 }
 .dsh-settings-resize-model-badge {
   flex: none;

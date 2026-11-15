@@ -255,12 +255,13 @@ check(
 const deepseekReg = cardRegs.find((r) => r.options.key === 'llm-deepseek')
 const t = (key, params) => {
   const dict = {
-    modelSwitchTitle: '开关',
-    modelSwitchHintAll: '全部模型都会出现在模型选择器中。',
-    modelSwitchHintOff: '{count} 个模型已从模型选择器中隐藏，此处仍可管理。',
+    modelSwitchTitle: '在对话中显示',
+    modelSwitchHint: '关闭后该模型不再出现在对话的模型选择器中，此处仍可随时打开。',
+    modelSwitchHintOff: '已关闭 {count} 个',
+    modelRowNoteOn: '会出现在模型选择器中',
+    modelRowNoteOff: '已从模型选择器中隐藏',
     modelEnable: '启用',
     modelDisable: '关闭',
-    modelDisabledBadge: '已隐藏',
     modelRestoreAll: '全部恢复（{count}）',
     modelWriteFailed: '写入失败：{message}',
   }
@@ -330,7 +331,7 @@ const tree2 = deepseekReg.component({
 })
 const text2 = collect(tree2)
 check('the Settings page still shows the hidden model', text2.includes('DeepSeek-V4-Pro'))
-check('it is marked as hidden', text2.includes('已隐藏'))
+check('it is marked as hidden', text2.includes('已从模型选择器中隐藏'))
 check(
   'its switch reads off',
   findSwitch(tree2, 'DeepSeek-V4-Pro')?.['aria-checked'] === false,
