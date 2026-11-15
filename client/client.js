@@ -54,469 +54,254 @@ window.__ModuleLoader__.load({
 
     /*
      * ---------------------------------------------------------------------------------
-     * Model enable/disable
+     * Model on/off switches
      * ---------------------------------------------------------------------------------
      *
-     * The Models page lists three provider families, and all three keep their catalog in
-     * the settings document:
+     * The switch belongs to each provider card on Settings → Models, next to Edit and
+     * Remove, and it changes ONE thing: whether the conversation model picker offers that
+     * model. The Settings page keeps listing every model, because its rows come from the
+     * settings document while the picker reads `llm.listModels()`.
      *
-     *   - `llm-deepseek`     one adapter, `models` array; rendered twice as "DeepSeek 账号"
-     *                        (OAuth) and "DeepSeek" (API key). Disabling a model there hides
-     *                        it from both groups, because both read the same catalog.
-     *   - `llm-pi-ai`        one `models` array per provider profile (`providers.<id>.models`).
-     *
-     * So "disable a model" is a catalog edit, not a picker hack: both model pickers read
-     * `listModels()`, which reads this catalog, so the model disappears from both entries at
-     * once. Removing every model of a provider makes that provider vanish from the pickers
-     * too — which is what the user asked for.
-     *
-     * The write goes through `ctx.configForms.get(ns)`, the same revision-checked write queue
-     * the Models page uses, so an edit made in parallel on that page is not clobbered.
-     *
-     * Each removal is recorded (entry verbatim + its index) in this plugin's own settings
-     * namespace, so re-enabling restores the exact original entry in its original position,
-     * and disabling the plugin restores everything.
+     * The filtering itself runs on the Host (see lib/index.js): the Client only reads and
+     * writes the list of switched-off routes through the plugin's own settings namespace,
+     * which every surface can read.
      */
 
-    /** This plugin's settings namespace, which holds the removal records. */
+    /** This plugin's settings namespace, which holds the switched-off list. */
     const RECORD_NS = 'dsh-settings-resize'
 
-    /** Provider families the Models page renders, and the namespace owning each catalog. */
-    const DEEPSEEK_NS = 'llm-deepseek'
-    const PI_AI_NS = 'llm-pi-ai'
-
-    /*
-     * ---------------------------------------------------------------------------------
-     * Catalog access + removal records
-     * ---------------------------------------------------------------------------------
-     */
-
     /**
-     * Locate the catalog a given provider keeps its models in.
+     * Read the switched-off routes.
      *
      * @param configForms - the client form registry.
-     * @param namespace - owning settings namespace.
-     * @param provider - provider route (used only for `llm-pi-ai`).
-     * @returns the value object, the models array, and the settings path holding it.
+     * @returns a Set of `provider\u0000modelId` keys.
      */
-    function locateCatalog(configForms, namespace, provider) {
-      const form = configForms.get(namespace)
-      if (form === undefined || form === null) return undefined
-      const value = form.getSnapshot().value
-      if (value === null || typeof value !== 'object') return undefined
-
-      if (namespace === DEEPSEEK_NS) {
-        const models = value.models
-        if (!Array.isArray(models)) return undefined
-        return { form, models, path: ['models'] }
-      }
-
-      const providers = value.providers
-      if (providers === null || typeof providers !== 'object') return undefined
-      const profile = providers[provider]
-      if (profile === null || typeof profile !== 'object') return undefined
-      const models = profile.models
-      if (!Array.isArray(models)) return undefined
-      return { form, models, path: ['providers', provider, 'models'] }
-    }
-
-    /** Whether a catalog entry is the requested model (id first, display name second). */
-    function isModel(entry, modelId, modelName) {
-      if (entry === null || typeof entry !== 'object') return false
-      if (typeof entry.id === 'string' && entry.id === modelId) return true
-      return typeof modelName === 'string' && typeof entry.name === 'string' && entry.name === modelName
-    }
-
-    /**
-     * Read the plugin's removal records.
-     *
-     * @param configForms - the client form registry.
-     * @returns the stored records, oldest first.
-     */
-    function readRecords(configForms) {
+    function readDisabledKeys(configForms) {
       const form = configForms.get(RECORD_NS)
-      if (form === undefined || form === null) return []
-      const records = form.getSnapshot().value?.disabledModels
-      return Array.isArray(records) ? records : []
-    }
-
-    /**
-     * Persist the removal records through the same shared write queue.
-     *
-     * @param configForms - the client form registry.
-     * @param records - complete list to store.
-     */
-    async function writeRecords(configForms, records) {
-      await configForms.get(RECORD_NS).set('disabledModels', records)
-    }
-
-    /**
-     * Remove one model from its provider catalog and record the removal.
-     *
-     * @param configForms - the client form registry.
-     * @param target - namespace, provider, and the model identity.
-     * @returns a result the caller can surface, or an error to report.
-     */
-    async function disableModel(configForms, target) {
-      const catalog = locateCatalog(configForms, target.namespace, target.provider)
-      if (catalog === undefined) return { ok: false, reason: 'catalog-missing' }
-
-      const index = catalog.models.findIndex((entry) =>
-        isModel(entry, target.modelId, target.modelName),
+      if (form === undefined || form === null) return new Set()
+      const list = form.getSnapshot().value?.disabledModels
+      if (!Array.isArray(list)) return new Set()
+      return new Set(
+        list
+          .filter((entry) => typeof entry?.provider === 'string' && typeof entry?.modelId === 'string')
+          .map((entry) => entry.provider + '\u0000' + entry.modelId),
       )
-      if (index < 0) return { ok: false, reason: 'model-missing' }
-
-      const entry = catalog.models[index]
-      const remaining = catalog.models.filter((_, at) => at !== index)
-
-      // One path-addressed write replaces the array, so a concurrent edit to a different
-      // field of the same namespace survives.
-      await catalog.form.mutate([{ op: 'set', path: catalog.path, value: remaining }])
-
-      const records = readRecords(configForms).filter(
-        (record) =>
-          !(record.namespace === target.namespace && record.provider === target.provider && record.modelId === entry.id),
-      )
-      records.push({
-        namespace: target.namespace,
-        provider: target.provider,
-        modelId: entry.id,
-        modelName: entry.name,
-        index,
-        entry,
-        at: new Date().toISOString(),
-      })
-      await writeRecords(configForms, records)
-
-      return { ok: true, remaining: remaining.length }
     }
 
     /**
-     * Put one model back where it was removed from.
-     *
-     * The stored index is honoured while it still fits, so catalog order is preserved.
+     * Persist the switched-off routes through the shared write queue.
      *
      * @param configForms - the client form registry.
-     * @param target - namespace, provider, and the model identity.
-     * @returns a result the caller can surface, or an error to report.
+     * @param keys - complete key set to store.
      */
-    async function enableModel(configForms, target) {
-      const records = readRecords(configForms)
-      const record = records.find(
-        (candidate) =>
-          candidate.namespace === target.namespace &&
-          candidate.provider === target.provider &&
-          candidate.modelId === target.modelId,
-      )
-      if (record === undefined) return { ok: false, reason: 'record-missing' }
-
-      const catalog = locateCatalog(configForms, target.namespace, target.provider)
-      if (catalog === undefined) return { ok: false, reason: 'catalog-missing' }
-
-      const still = catalog.models.some((entry) => isModel(entry, record.modelId, record.modelName))
-      if (!still) {
-        const next = [...catalog.models]
-        const at = Number.isInteger(record.index) && record.index <= next.length ? record.index : next.length
-        next.splice(at, 0, record.entry)
-        await catalog.form.mutate([{ op: 'set', path: catalog.path, value: next }])
-      }
-
-      await writeRecords(
-        configForms,
-        records.filter((candidate) => candidate.modelId !== record.modelId || candidate.provider !== record.provider || candidate.namespace !== record.namespace),
-      )
-      return { ok: true, restored: !still }
-    }
-
-    /**
-     * Restore every recorded model. Runs when the plugin is disabled, so turning the feature
-     * off hands the catalogs back exactly as they were.
-     *
-     * @param configForms - the client form registry.
-     * @returns how many entries were written back.
-     */
-    async function restoreAll(configForms) {
-      const records = readRecords(configForms)
-      if (records.length === 0) return { restored: 0 }
-
-      // Group by (namespace, provider) and insert from the highest index down, so one
-      // insertion never shifts a later one's target position.
-      const groups = new Map()
-      for (const record of records) {
-        const key = record.namespace + '\u0000' + record.provider
-        if (!groups.has(key)) groups.set(key, [])
-        groups.get(key).push(record)
-      }
-
-      let restored = 0
-      for (const group of groups.values()) {
-        const first = group[0]
-        const catalog = locateCatalog(configForms, first.namespace, first.provider)
-        if (catalog === undefined) continue
-
-        const next = [...catalog.models]
-        let changed = false
-        for (const record of [...group].sort((a, b) => (b.index ?? 0) - (a.index ?? 0))) {
-          if (next.some((entry) => isModel(entry, record.modelId, record.modelName))) continue
-          const at = Number.isInteger(record.index) && record.index <= next.length ? record.index : next.length
-          next.splice(at, 0, record.entry)
-          restored += 1
-          changed = true
-        }
-        if (changed) {
-          await catalog.form.mutate([{ op: 'set', path: catalog.path, value: next }])
-        }
-      }
-
-      await writeRecords(configForms, [])
-      return { restored }
-    }
-
-    /*
-     * ---------------------------------------------------------------------------------
-     * Catalog rows
-     * ---------------------------------------------------------------------------------
-     */
-
-    /**
-     * Every model the Models page currently shows, plus the ones this plugin has removed.
-     *
-     * A removed model is no longer in its provider catalog, so it has to be listed from the
-     * records — otherwise the switch that removed it would disappear with it and there would
-     * be no way to turn it back on.
-     *
-     * @param configForms - the client form registry.
-     * @returns grouped provider rows, catalog models first then removed ones.
-     */
-    function listCatalog(configForms) {
-      const records = readRecords(configForms)
-
-      const groups = new Map()
-      const groupFor = (namespace, provider, title) => {
-        const key = namespace + '\u0000' + provider
-        if (!groups.has(key)) groups.set(key, { namespace, provider, title, models: [] })
-        const group = groups.get(key)
-        // A provider row discovered through records may already exist; keep the live title.
-        if (title !== undefined && group.title === undefined) group.title = title
-        return group
-      }
-
-      const deepseek = locateCatalog(configForms, DEEPSEEK_NS, undefined)
-      if (deepseek !== undefined) {
-        // The adapter renders under two display names; one catalog backs both.
-        const group = groupFor(DEEPSEEK_NS, DEEPSEEK_NS, 'DeepSeek')
-        for (const entry of deepseek.models) {
-          group.models.push({
-            namespace: DEEPSEEK_NS,
-            provider: DEEPSEEK_NS,
-            modelId: entry.id,
-            modelName: entry.name ?? entry.id,
-            disabled: false,
-          })
-        }
-      }
-
-      const piForm = configForms.get(PI_AI_NS)
-      const piProviders = piForm?.getSnapshot()?.value?.providers
-      if (piProviders !== null && typeof piProviders === 'object') {
-        for (const [id, profile] of Object.entries(piProviders)) {
-          const models = Array.isArray(profile?.models) ? profile.models : []
-          const group = groupFor(PI_AI_NS, id, profile?.displayName ?? id)
-          for (const entry of models) {
-            group.models.push({
-              namespace: PI_AI_NS,
-              provider: id,
-              modelId: entry.id,
-              modelName: entry.name ?? entry.id,
-              disabled: false,
-            })
-          }
-        }
-      }
-
-      // Append removed models, which live only in the records now.
-      for (const record of records) {
-        const group = groupFor(record.namespace, record.provider, undefined)
-        group.models.push({
-          namespace: record.namespace,
-          provider: record.provider,
-          modelId: record.modelId,
-          modelName: record.modelName ?? record.modelId,
-          disabled: true,
+    async function writeDisabledKeys(configForms, keys) {
+      const disabledModels = [...keys]
+        .map((key) => {
+          const parts = key.split('\u0000')
+          return { provider: parts[0], modelId: parts[1] }
         })
-      }
-
-      // A provider whose every model is removed still shows, so the last switch stays
-      // reachable; drop a group only when it never had anything to show.
-      return [...groups.values()].filter((group) => group.models.length > 0)
+        .sort(
+          (left, right) =>
+            left.provider.localeCompare(right.provider) ||
+            left.modelId.localeCompare(right.modelId),
+        )
+      await configForms.get(RECORD_NS).set('disabledModels', disabledModels)
     }
 
-    /*
-     * ---------------------------------------------------------------------------------
-     * Model switches UI
-     * ---------------------------------------------------------------------------------
+    /**
+     * Read every model a provider currently offers, straight from its settings row.
+     *
+     * Both provider families keep the catalog in the settings document, and neither is read
+     * through `listModels`, so this is unaffected by the picker filter.
+     *
+     * @param configForms - the client form registry.
+     * @param settingsNs - namespace owning the provider's configuration.
+     * @param provider - provider route id.
+     * @returns `{ id, name }` rows in catalog order.
      */
+    function modelsOfProvider(configForms, settingsNs, provider) {
+      const form = configForms.get(settingsNs)
+      if (form === undefined || form === null) return []
+      const value = form.getSnapshot().value
+      if (value === null || typeof value !== 'object') return []
+
+      // A provider-less namespace (llm-deepseek) keeps one flat catalog; a pi-ai profile keeps
+      // one catalog per provider id.
+      const profile =
+        value.providers !== null && typeof value.providers === 'object'
+          ? value.providers[provider]
+          : value
+      const models = profile?.models
+      if (!Array.isArray(models)) return []
+      return models
+        .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.id === 'string')
+        .map((entry) => ({ id: entry.id, name: entry.name ?? entry.id }))
+    }
 
     /**
-     * The model switch panel appended below the Models page provider rows.
+     * The switch row rendered inside one provider card.
      *
-     * One row per model, including models this plugin has removed (read back from the
-     * records), so a switch never disappears along with what it turned off.
+     * It lists the provider's models with a switch each. Nothing is hidden on this page: a
+     * switched-off model is shown with an "off" badge, and turning it back on is the same
+     * gesture.
      *
-     * @param props - `t` from the registration locale, `configForms` from the plugin.
+     * @param props - owner props (`provider`) plus `t` and the injected model controls.
      */
-    function ModelSwitches(props) {
-      const { t, configForms } = props
-      const [groups, setGroups] = useState(() => listCatalog(configForms))
+    function ProviderModelSwitches(props) {
+      const { provider, t, configForms } = props
+      const settingsNs = provider?.settingsNs
+      const providerId = provider?.provider
+      const [keys, setKeys] = useState(() => readDisabledKeys(configForms))
       const [busy, setBusy] = useState('')
       const [notice, setNotice] = useState('')
       const useEffect = React.useEffect
 
-      // Re-read whenever any owning namespace changes. `configForms.get` returns the same
-      // form instance per namespace, so subscribing once is enough.
       const refresh = useCallback(() => {
-        setGroups(listCatalog(configForms))
+        setKeys(readDisabledKeys(configForms))
       }, [configForms])
 
       useEffect(() => {
-        const disposers = []
-        for (const ns of [DEEPSEEK_NS, PI_AI_NS, RECORD_NS]) {
-          const form = configForms.get(ns)
-          if (form !== undefined && form !== null) {
-            disposers.push(form.subscribe(refresh))
-          }
-        }
+        const form = configForms.get(RECORD_NS)
+        if (form === undefined || form === null) return () => {}
+        const dispose = form.subscribe(refresh)
         refresh()
         return () => {
-          for (const dispose of disposers) {
-            try {
-              dispose()
-            } catch {
-              // A form disposed with its owner namespace needs no cleanup here.
-            }
+          try {
+            dispose()
+          } catch {
+            // Disposed with its namespace.
           }
         }
       }, [configForms, refresh])
 
+      const models = settingsNs === undefined ? [] : modelsOfProvider(configForms, settingsNs, providerId)
+
       const toggle = useCallback(
         async (model) => {
-          const key = model.namespace + '/' + model.provider + '/' + model.modelId
+          const key = providerId + '\u0000' + model.id
           if (busy !== '') return
           setBusy(key)
           setNotice('')
           try {
-            const target = {
-              namespace: model.namespace,
-              provider: model.provider,
-              modelId: model.modelId,
-              modelName: model.modelName,
-            }
-            const result = model.disabled
-              ? await enableModel(configForms, target)
-              : await disableModel(configForms, target)
-            if (result.ok === false) {
-              setNotice(t('modelWriteFailed', { message: result.reason }))
-            }
-            refresh()
+            const next = new Set(readDisabledKeys(configForms))
+            if (next.has(key)) next.delete(key)
+            else next.add(key)
+            await writeDisabledKeys(configForms, next)
+            setKeys(next)
           } catch (error) {
             setNotice(t('modelWriteFailed', { message: String(error?.message ?? error) }))
           } finally {
             setBusy('')
           }
         },
-        [busy, configForms, refresh, t],
+        [busy, configForms, providerId, t],
       )
 
-      const restoreEverything = useCallback(async () => {
-        if (busy !== '') return
-        setBusy('all')
-        setNotice('')
-        try {
-          const result = await restoreAll(configForms)
-          if (result.restored > 0) setNotice(t('modelRestored', { count: result.restored }))
-          refresh()
-        } catch (error) {
-          setNotice(t('modelWriteFailed', { message: String(error?.message ?? error) }))
-        } finally {
-          setBusy('')
-        }
-      }, [busy, configForms, refresh, t])
+      if (models.length === 0) return null
 
-      const disabledCount = groups.reduce(
-        (total, group) => total + group.models.filter((model) => model.disabled).length,
-        0,
-      )
-      const hasModels = groups.some((group) => group.models.length > 0)
-      if (!hasModels) return null
+      const offCount = models.filter((model) => keys.has(providerId + '\u0000' + model.id)).length
 
       return h(
         'div',
-        { className: 'dsh-settings-resize-models' },
+        { className: 'dsh-settings-resize-model-block' },
         h(
           'div',
-          { className: 'dsh-settings-resize-models-head' },
+          { className: 'dsh-settings-resize-model-block-head' },
+          h('span', { className: 'dsh-settings-resize-model-block-title' }, t('modelSwitchTitle')),
           h(
-            'div',
-            null,
-            h('div', { className: 'dsh-settings-resize-title' }, t('modelSection')),
-            h('div', { className: 'dsh-settings-resize-desc' }, t('modelSectionHint')),
+            'span',
+            { className: 'dsh-settings-resize-model-block-hint' },
+            offCount === 0 ? t('modelSwitchHintAll') : t('modelSwitchHintOff', { count: offCount }),
           ),
-          disabledCount === 0
-            ? null
-            : h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'dsh-settings-resize-models-restore',
-                  disabled: busy !== '',
-                  onClick: restoreEverything,
-                },
-                t('modelRestoreAll'),
-              ),
         ),
         notice === ''
           ? null
           : h('div', { className: 'dsh-settings-resize-notice', role: 'status' }, notice),
-        ...groups.map((group) =>
-          h(
+        ...models.map((model) => {
+          const key = providerId + '\u0000' + model.id
+          const off = keys.has(key)
+          return h(
             'div',
-            { key: group.namespace + '/' + group.provider, className: 'dsh-settings-resize-model-group' },
-            h('div', { className: 'dsh-settings-resize-model-group-title' }, group.title),
-            ...group.models.map((model) => {
-              const key = model.namespace + '/' + model.provider + '/' + model.modelId
-              const off = model.disabled
-              return h(
-                'div',
-                {
-                  key,
-                  className: 'dsh-settings-resize-model-row',
-                  'data-disabled': off ? 'true' : undefined,
-                },
-                h(
-                  'span',
-                  { className: 'dsh-settings-resize-model-name' },
-                  model.modelName,
-                  off
-                    ? h('span', { className: 'dsh-settings-resize-model-badge' }, t('modelDisabledBadge'))
-                    : null,
-                ),
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    role: 'switch',
-                    'aria-checked': !off,
-                    'aria-label': (off ? t('modelEnable') : t('modelDisable')) + ' ' + model.modelName,
-                    className: 'dsh-settings-resize-model-switch',
-                    'data-on': off ? undefined : 'true',
-                    disabled: busy !== '',
-                    onClick: () => toggle(model),
-                  },
-                  h('span', { 'aria-hidden': true }),
-                ),
-              )
-            }),
-          ),
+            {
+              key,
+              className: 'dsh-settings-resize-model-row',
+              'data-disabled': off ? 'true' : undefined,
+            },
+            h(
+              'span',
+              { className: 'dsh-settings-resize-model-name' },
+              model.name,
+              off
+                ? h('span', { className: 'dsh-settings-resize-model-badge' }, t('modelDisabledBadge'))
+                : null,
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                role: 'switch',
+                'aria-checked': !off,
+                'aria-label': (off ? t('modelEnable') : t('modelDisable')) + ' ' + model.name,
+                className: 'dsh-settings-resize-model-switch',
+                'data-on': off ? undefined : 'true',
+                disabled: busy !== '',
+                onClick: () => toggle(model),
+              },
+              h('span', { 'aria-hidden': true }),
+            ),
+          )
+        }),
+      )
+    }
+
+    /**
+     * Reveal every switched-off model. Also the recovery path when a stored list outlives a
+     * provider rename and nothing else would clear it.
+     *
+     * @param props - `t` and the injected controls.
+     */
+    function RestoreAllModels(props) {
+      const { t, configForms } = props
+      const [keys, setKeys] = useState(() => readDisabledKeys(configForms))
+      const [busy, setBusy] = useState(false)
+      const useEffect = React.useEffect
+
+      const refresh = useCallback(() => setKeys(readDisabledKeys(configForms)), [configForms])
+      useEffect(() => {
+        const form = configForms.get(RECORD_NS)
+        if (form === undefined || form === null) return () => {}
+        const dispose = form.subscribe(refresh)
+        refresh()
+        return () => {
+          try {
+            dispose()
+          } catch {
+            // Disposed with its namespace.
+          }
+        }
+      }, [configForms, refresh])
+
+      if (keys.size === 0) return null
+
+      return h(
+        'div',
+        { className: 'dsh-settings-resize-restore-all' },
+        h(
+          'button',
+          {
+            type: 'button',
+            disabled: busy,
+            onClick: async () => {
+              setBusy(true)
+              try {
+                await writeDisabledKeys(configForms, new Set())
+                setKeys(new Set())
+              } finally {
+                setBusy(false)
+              }
+            },
+          },
+          t('modelRestoreAll', { count: keys.size }),
         ),
       )
     }
@@ -541,16 +326,14 @@ window.__ModuleLoader__.load({
       noticeClamped: '已按范围截断：{min}–{max}{unit}',
       footnote:
         '透明度只让弹窗底衬变透，文字与控件保持清晰；拖到 100% 时底衬完全透明，弹窗边缘仍保留一圈描边，方便定位。窗口较小时宽高会自动缩小，不会超出屏幕。',
-      modelSection: '模型开关',
-      modelSectionHint: '关闭某个模型后，它会从模型选择器中消失；一个提供商下的模型全部关闭时，该提供商也会消失。',
+      modelSwitchTitle: '开关',
+      modelSwitchHintAll: '全部模型都会出现在模型选择器中。',
+      modelSwitchHintOff: '{count} 个模型已从模型选择器中隐藏，此处仍可管理。',
       modelEnable: '启用',
       modelDisable: '关闭',
-      modelDisabledBadge: '已关闭',
-      modelRestoreAll: '全部恢复',
-      modelRestored: '已恢复 {count} 个模型',
-      modelBusy: '处理中…',
+      modelDisabledBadge: '已隐藏',
+      modelRestoreAll: '全部恢复（{count}）',
       modelWriteFailed: '写入失败：{message}',
-      modelLastOne: '这是最后一个模型，关闭后该提供商将不再显示。',
     }
 
     const en = {
@@ -569,17 +352,15 @@ window.__ModuleLoader__.load({
       noticeClamped: 'Clamped to {min}–{max}{unit}',
       footnote:
         'Transparency fades the dialog surface only, so text and controls stay sharp. At 100% the surface is fully clear and a thin outline keeps the dialog edge findable. When the window is small, the size shrinks to fit the screen.',
-      modelSection: 'Models',
-      modelSectionHint:
-        'Turning a model off removes it from the model picker. Turning off every model of a provider removes that provider as well.',
+      modelSwitchTitle: 'Switches',
+      modelSwitchHintAll: 'Every model appears in the model picker.',
+      modelSwitchHintOff:
+        '{count} model(s) hidden from the model picker; they stay listed and manageable here.',
       modelEnable: 'On',
       modelDisable: 'Off',
-      modelDisabledBadge: 'Off',
-      modelRestoreAll: 'Restore all',
-      modelRestored: 'Restored {count} model(s)',
-      modelBusy: 'Working…',
+      modelDisabledBadge: 'Hidden',
+      modelRestoreAll: 'Restore all ({count})',
       modelWriteFailed: 'Write failed: {message}',
-      modelLastOne: 'This is the last model. Turning it off hides the whole provider.',
     }
 
     const STYLE_TEXT = `
@@ -711,22 +492,37 @@ html {
   line-height: 18px;
   color: var(--dsw-alias-state-warn-primary);
 }
-.dsh-settings-resize-models {
+.dsh-settings-resize-model-block {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 8px;
-  padding: 16px 0 4px;
+  gap: 2px;
+  margin-top: 12px;
+  padding-top: 10px;
   border-top: .5px solid var(--dsw-alias-border-l2);
 }
-.dsh-settings-resize-models-head {
+.dsh-settings-resize-model-block-head {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding-bottom: 2px;
 }
-.dsh-settings-resize-models-restore {
-  flex: none;
+.dsh-settings-resize-model-block-title {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-settings-resize-model-block-hint {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-settings-resize-restore-all {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+.dsh-settings-resize-restore-all button {
   height: 28px;
   padding: 0 10px;
   border: .5px solid var(--dsw-alias-border-l4);
@@ -737,23 +533,12 @@ html {
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
 }
-.dsh-settings-resize-models-restore:hover:not(:disabled) {
+.dsh-settings-resize-restore-all button:hover:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover);
 }
-.dsh-settings-resize-models-restore:disabled {
+.dsh-settings-resize-restore-all button:disabled {
   opacity: .45;
   cursor: default;
-}
-.dsh-settings-resize-model-group {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.dsh-settings-resize-model-group-title {
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
-  padding-top: 4px;
 }
 .dsh-settings-resize-model-row {
   display: flex;
@@ -1220,44 +1005,62 @@ html {
       )
 
       /*
-       * Model switches live on the Models page, as a footer area below the provider rows.
-       * The panel reads and writes the provider catalogs itself, so it needs `configForms`.
+       * Model switches sit inside each provider card on Settings → Models, dispatched by the
+       * card's settings namespace, which is what places the row next to Edit / Remove.
+       *
+       * One registration receives every card of that family, including hand-declared routes,
+       * so the switch appears beside each provider's own model list rather than in a panel of
+       * its own.
        */
       const configForms = ctx.configForms
       if (configForms !== undefined) {
+        ctx.effect(
+          () =>
+            ctx.slots.inject('settings.models.provider-card', () => {
+              /*
+               * Register for the two provider families the Models page dispatches. A fixed
+               * list beats reading `configForms.describe()` here: the mirror may still be
+               * empty during boot, and a registration built from it would then never appear.
+               * A key this page never dispatches simply renders nothing.
+               */
+              const disposers = []
+              for (const ns of ['llm-deepseek', 'llm-pi-ai']) {
+                disposers.push(
+                  ctx.slots.register(
+                    {
+                      name: 'settings.models.provider-card',
+                      key: ns,
+                      locale: NS,
+                      inject: () => ({ configForms }),
+                    },
+                    ProviderModelSwitches,
+                  ),
+                )
+              }
+              return () => {
+                for (const dispose of disposers) dispose()
+              }
+            }),
+          'dsh-settings-resize: provider model switches',
+        )
+
+        // A footer link reveals everything at once, so a switched-off model can always be
+        // brought back even when its provider is not on the page.
         ctx.effect(
           () =>
             ctx.slots.inject('settings.models.footer', () =>
               ctx.slots.register(
                 {
                   name: 'settings.models.footer',
-                  id: 'settings-resize-model-switches',
-                  order: 10,
+                  id: 'settings-resize-restore-models',
+                  order: 90,
                   locale: NS,
                   inject: () => ({ configForms }),
                 },
-                ModelSwitches,
+                RestoreAllModels,
               ),
             ),
-          'dsh-settings-resize: model switches',
-        )
-
-        /*
-         * Hand the catalogs back when the plugin is disabled.
-         *
-         * `ctx.effect` cleanups cannot await, so the restore is fire-and-forget: the writes
-         * go through the shared form queue and settle on their own. Nothing else can run
-         * after unload that would race it, because this plugin's registrations are already
-         * gone by then.
-         */
-        ctx.effect(
-          () => () => {
-            void restoreAll(configForms).catch(() => {
-              // A failing restore must not throw during unload; the records stay in place
-              // and the next enable retries.
-            })
-          },
-          'dsh-settings-resize: restore catalogs on unload',
+          'dsh-settings-resize: restore all models',
         )
       }
     }

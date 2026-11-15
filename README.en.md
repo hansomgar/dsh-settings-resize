@@ -17,8 +17,8 @@ The UI is bilingual and follows the active DSH language (Chinese or English).
 - **Reset to default**: one click returns to the shipped 800 × 800, fully opaque.
 - **Never overflows the screen**: width is capped at `100vw - 48px` and height at `100vh - 2 * max(24px, var(--dsh-frame-overlay-top, 24px))`, so shrinking the window clamps the dialog instead of spilling it off-screen.
 - **Scoped to the Settings dialog**: every rule is keyed on `[data-shortcut-modal="settings"]`; other dialogs, panels and pages are untouched.
-- **Model switches**: a panel at the bottom of **Settings → Models** lists every model of every provider with an on/off switch. Turning a model off removes it from its provider's catalog, so it disappears from both model pickers. Turning off every model of a provider removes that provider too. Disabling the plugin restores every catalog.
-- **Cleanly removable**: the `<style>` element, all four CSS custom properties, the slot registrations and the locale dictionaries are created inside `ctx.effect` cleanups, so disabling or uninstalling restores the shipped dialog exactly and writes the removed models back.
+- **Model switches**: inside each provider card on **Settings → Models**, below its model list. Turning a model off removes it from the **conversation model picker** only — the Settings page keeps listing it with a "Hidden" badge, and it can be turned back on at any time. Turning off every model of a provider also removes that provider from the picker.
+- **Cleanly removable**: the `<style>` element, all four CSS custom properties, the slot registrations and the locale dictionaries are created inside `ctx.effect` cleanups, so disabling or uninstalling restores the shipped dialog exactly and removes the model filter.
 
 ## Layout
 
@@ -105,24 +105,20 @@ Dictionaries are registered once, both languages in one call, and the returning 
 
 ## How model switches work
 
-The Models page shows three provider families, and all three keep their model catalog in
-the settings document:
+The two surfaces read different sources:
 
-| Provider | Namespace | Where the catalog lives |
-|---|---|---|
-| DeepSeek 账号 / DeepSeek | `llm-deepseek` | `models` — one array, rendered twice under two display names |
-| dshcapi (custom) | `llm-pi-ai` | `providers.<id>.models` |
+| Surface | Source |
+|---|---|
+| Settings → Models | the settings document (`models` / `providers.<id>.models`) |
+| Conversation picker and `/model` popup | `buildModelCatalog()` → `ctx.llm.listModels()` |
 
-So "disable a model" is a catalog edit, not a picker hack. Both model pickers read
-`listModels()`, which reads this catalog, so a removed model disappears from both at once —
-and removing every model of a provider makes that provider vanish from the pickers too.
+So the plugin never edits the settings document. It wraps `listModels` on the Host and drops
+the switched-off models from the returned list, which leaves the Settings page completely
+untouched: every model stays listed and editable there.
 
-The write goes through `ctx.configForms.get(ns)`, the same revision-checked write queue the
-Models page itself uses, so an edit made in parallel on that page is not clobbered.
-
-Each removal is recorded in this plugin's own settings namespace, keeping the entry
-verbatim and its original index. Re-enabling writes the exact original entry back at its
-original position, and disabling the plugin restores every catalog.
+The wrapper is installed on the live LLM registry and removed by its disposer, so disabling
+the plugin leaves no persisted trace. The switch list lives in the plugin's own settings
+namespace for the UI to read.
 
 ## Install
 
