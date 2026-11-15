@@ -37,7 +37,10 @@ check('explains outline over border', /`outline`, not a `border`/.test(en) && /o
 check('documents both custom properties of the surface', en.includes('--dsh-settings-alpha') && en.includes('--dsh-settings-edge'))
 
 // --- locale contract --------------------------------------------------------------
-check('documents the hard locale dependency', /\['slots', 'locale'\]/.test(en) && /inject: \['slots', 'locale'\]/.test(client))
+check(
+  'documents the hard locale dependency',
+  /\['slots', 'locale'\]/.test(en) && /inject: \['slots', 'locale', 'configForms'\]/.test(client),
+)
 // `ctx.get('locale')` may appear only as the explanation of the bug, never as advice.
 check(
   'mentions ctx.get only as the historical mistake, not as guidance',

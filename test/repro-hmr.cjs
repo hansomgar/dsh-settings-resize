@@ -17,8 +17,13 @@ const source = fs.readFileSync(path.join(root, 'client', 'client.js'), 'utf8')
 const asar = fs.readFileSync('C:/Cinstall/ProgramTools/DSH/resources/app.asar', 'utf8')
 
 // --- extract the real LocaleRuntime from the shipped bundle ------------------------
-const start = asar.indexOf('var LocaleRuntime = class {')
-if (start < 0) throw new Error('LocaleRuntime not found')
+// The shipped form varies by release: a transpiled `var LocaleRuntime = class {` in some
+// builds, an authored `export class LocaleRuntime {` in others. Accept either rather than
+// pinning one spelling, so a DSH upgrade does not silently disable this test's coverage.
+const declaration = /(?:var\s+LocaleRuntime\s*=\s*class|(?:export\s+)?class\s+LocaleRuntime)\s*\{/
+const head = declaration.exec(asar)
+if (head === null) throw new Error('LocaleRuntime declaration not found in the bundle')
+const start = head.index
 let depth = 0
 let i = asar.indexOf('{', start)
 for (; i < asar.length; i++) {
@@ -28,7 +33,12 @@ for (; i < asar.length; i++) {
     if (depth === 0) break
   }
 }
-const classText = asar.slice(start, i + 1)
+// Strip TypeScript modifiers no plain-JS eval accepts in this position.
+const classText = asar
+  .slice(start, i + 1)
+  .replace(/^export\s+/, '')
+  .replace(/\bprivate\s+(?=\w)/g, '')
+  .replace(/\breadonly\s+(?=\w)/g, '')
 
 const sandbox = { console }
 vm.createContext(sandbox)

@@ -17,7 +17,8 @@ The UI is bilingual and follows the active DSH language (Chinese or English).
 - **Reset to default**: one click returns to the shipped 800 × 800, fully opaque.
 - **Never overflows the screen**: width is capped at `100vw - 48px` and height at `100vh - 2 * max(24px, var(--dsh-frame-overlay-top, 24px))`, so shrinking the window clamps the dialog instead of spilling it off-screen.
 - **Scoped to the Settings dialog**: every rule is keyed on `[data-shortcut-modal="settings"]`; other dialogs, panels and pages are untouched.
-- **Cleanly removable**: the `<style>` element, all four CSS custom properties, the slot registration and the locale dictionaries are created inside `ctx.effect` cleanups, so disabling or uninstalling restores the shipped dialog exactly.
+- **Model switches**: a panel at the bottom of **Settings → Models** lists every model of every provider with an on/off switch. Turning a model off removes it from its provider's catalog, so it disappears from both model pickers. Turning off every model of a provider removes that provider too. Disabling the plugin restores every catalog.
+- **Cleanly removable**: the `<style>` element, all four CSS custom properties, the slot registrations and the locale dictionaries are created inside `ctx.effect` cleanups, so disabling or uninstalling restores the shipped dialog exactly and writes the removed models back.
 
 ## Layout
 
@@ -101,6 +102,27 @@ export.inject = ['slots', 'locale']
 A cold page has no ordering guarantee between this plugin and the locale plugin. Probing with `ctx.get('locale')` and skipping registration when it was absent left the namespace without its dictionaries while the slot still declared `locale: NS` — the row then fell through to the `en` fallback and could never display Chinese. Declaring the dependency makes the loader hold this plugin inactive until the service exists, so `apply` always sees a live service.
 
 Dictionaries are registered once, both languages in one call, and the returning disposer is parked on `globalThis` so a reload can release the previous claim before re-registering. The service keeps one occupant per `(namespace, language)` and throws on a duplicate, so releasing first is what allows the plugin to survive an HMR pass.
+
+## How model switches work
+
+The Models page shows three provider families, and all three keep their model catalog in
+the settings document:
+
+| Provider | Namespace | Where the catalog lives |
+|---|---|---|
+| DeepSeek 账号 / DeepSeek | `llm-deepseek` | `models` — one array, rendered twice under two display names |
+| dshcapi (custom) | `llm-pi-ai` | `providers.<id>.models` |
+
+So "disable a model" is a catalog edit, not a picker hack. Both model pickers read
+`listModels()`, which reads this catalog, so a removed model disappears from both at once —
+and removing every model of a provider makes that provider vanish from the pickers too.
+
+The write goes through `ctx.configForms.get(ns)`, the same revision-checked write queue the
+Models page itself uses, so an edit made in parallel on that page is not clobbered.
+
+Each removal is recorded in this plugin's own settings namespace, keeping the entry
+verbatim and its original index. Re-enabling writes the exact original entry back at its
+original position, and disabling the plugin restores every catalog.
 
 ## Install
 
