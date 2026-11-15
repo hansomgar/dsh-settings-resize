@@ -280,7 +280,10 @@ const cardRegs = registrations.filter((r) => r.options.name === 'settings.models
 check('registers switches on the provider-card slot', cardRegs.length > 0, String(cardRegs.length))
 check(
   'one registration per provider family',
-  cardRegs.some((r) => r.options.key === 'llm-deepseek') &&
+  // The Models page dispatches these three namespaces, including the OAuth account route,
+  // which is a separate namespace from the API-key route.
+  cardRegs.some((r) => r.options.key === 'llm-deepseek-account') &&
+    cardRegs.some((r) => r.options.key === 'llm-deepseek-api-key') &&
     cardRegs.some((r) => r.options.key === 'llm-pi-ai'),
   cardRegs.map((r) => r.options.key).join(','),
 )
@@ -290,12 +293,16 @@ check(
 )
 
 // The card component lists models from the settings document, with switches.
-const deepseekReg = cardRegs.find((r) => r.options.key === 'llm-deepseek')
+const deepseekReg = cardRegs.find((r) => r.options.key === 'llm-deepseek-api-key')
 const t = (key, params) => {
   const dict = {
     modelSwitchTitle: '在对话中显示',
     modelSwitchHint: '关闭后该模型不再出现在对话的模型选择器中，此处仍可随时打开。',
     modelSwitchHintOff: '已关闭 {count} 个',
+    providerSwitchLabel: '{name}（整个提供商）',
+    providerSwitchAria: '{action} {name}（整个提供商）',
+    providerRowNoteOn: '该提供商的模型会出现在模型选择器中',
+    providerRowNoteOff: '整个提供商已从模型选择器中隐藏',
     modelRowNoteOn: '会出现在模型选择器中',
     modelRowNoteOff: '已从模型选择器中隐藏',
     modelEnable: '启用',
@@ -344,6 +351,25 @@ function findSwitch(node, modelName) {
 const text = collect(tree)
 check('the card shows every model', text.includes('DeepSeek-V4.1-Flash') && text.includes('DeepSeek-V4-Pro'))
 check('every model has a switch', findSwitch(tree, 'DeepSeek-V4-Pro') !== undefined)
+check('the card offers a provider-level switch', findSwitch(tree, '（整个提供商）') !== undefined)
+
+// A provider card whose catalog is not readable here (the OAuth route keeps it remotely) must
+// still offer the provider-level switch — that was the bug in the first card.
+const accountReg = cardRegs.find((r) => r.options.key === 'llm-deepseek-account')
+const accountTree = accountReg.component({
+  provider: {
+    provider: 'deepseek-account',
+    settingsNs: 'llm-deepseek-account',
+    displayName: 'DeepSeek 账号',
+  },
+  t,
+  ...accountReg.options.inject(),
+})
+check(
+  'a provider without a readable catalog still renders the provider switch',
+  accountTree !== null && findSwitch(accountTree, '整个提供商') !== undefined,
+  accountTree === null ? 'rendered null' : 'no switch found',
+)
 
 // --- toggling writes the plugin list, not the provider catalog ---------------------
 await findSwitch(tree, 'DeepSeek-V4-Pro').onClick()

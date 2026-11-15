@@ -515,9 +515,29 @@ html {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 14px;
-  padding-top: 12px;
+  margin-top: 12px;
+  padding-top: 10px;
   border-top: .5px solid var(--dsw-alias-border-l2);
+}
+.dsh-settings-resize-provider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 32px;
+}
+.dsh-settings-resize-provider-row[data-disabled] .dsh-settings-resize-provider-name {
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-settings-resize-provider-name {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dsh-settings-resize-rowgroup-label {
   display: flex;
@@ -1300,7 +1320,13 @@ window.__ModuleLoader__.load({
         [busy, configForms, t],
       )
 
-      if (models.length === 0) return null
+      /*
+       * The provider switch is useful even when no model row can be listed: the OAuth route
+       * keeps its catalog remotely, so `modelsOfProvider` finds nothing for it, yet hiding the
+       * whole provider is still a meaningful action. Only a card with neither models nor a
+       * provider identity renders nothing.
+       */
+      if (providerId === undefined) return null
 
       const providerOff = state.providers.has(providerId)
       const offCount = models.filter((model) => state.models.has(providerId + '\u0000' + model.id)).length
@@ -1308,21 +1334,18 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'dsh-settings-resize-rowgroup' },
-        h(
-          'div',
-          { className: 'dsh-settings-resize-rowgroup-label' },
-          t('modelSwitchTitle'),
-          h('span', { className: 'dsh-settings-resize-rowgroup-note' }, t('modelSwitchHint')),
-        ),
         notice === ''
           ? null
           : h('div', { className: 'dsh-settings-resize-notice', role: 'status' }, notice),
 
-        // Provider-level switch: controls whether this provider appears at all.
+        /*
+         * Provider-level switch first: it reads as the card's own control, directly under the
+         * header where Edit sits, and states plainly that it governs the whole provider.
+         */
         h(
           'div',
           {
-            className: 'dsh-settings-resize-model-row',
+            className: 'dsh-settings-resize-provider-row',
             'data-disabled': providerOff ? 'true' : undefined,
           },
           h(
@@ -1330,7 +1353,7 @@ window.__ModuleLoader__.load({
             { className: 'dsh-settings-resize-model-text' },
             h(
               'span',
-              { className: 'dsh-settings-resize-model-name' },
+              { className: 'dsh-settings-resize-provider-name' },
               t('providerSwitchLabel', { name: providedName ?? providerId }),
             ),
             h(
@@ -1341,10 +1364,12 @@ window.__ModuleLoader__.load({
           ),
           h(PillSwitch, {
             on: !providerOff,
-            label:
-              (providerOff ? t('modelEnable') : t('modelDisable')) +
-              ' ' +
-              (providedName ?? providerId),
+            // The accessible name carries both the provider and the fact that it governs the
+            // whole provider, matching what the row shows.
+            label: t('providerSwitchAria', {
+              name: providedName ?? providerId,
+              action: providerOff ? t('modelEnable') : t('modelDisable'),
+            }),
             disabled: busy !== '',
             onChange: () =>
               commit(
@@ -1359,12 +1384,21 @@ window.__ModuleLoader__.load({
           }),
         ),
 
-        offCount === 0
+        // Model rows, only when this provider's catalog is readable here.
+        models.length === 0
           ? null
           : h(
-              'span',
-              { className: 'dsh-settings-resize-rowgroup-count' },
-              t('modelSwitchHintOff', { count: offCount }),
+              'div',
+              { className: 'dsh-settings-resize-rowgroup-label' },
+              t('modelSwitchTitle'),
+              h('span', { className: 'dsh-settings-resize-rowgroup-note' }, t('modelSwitchHint')),
+              offCount === 0
+                ? null
+                : h(
+                    'span',
+                    { className: 'dsh-settings-resize-rowgroup-count' },
+                    t('modelSwitchHintOff', { count: offCount }),
+                  ),
             ),
 
         // One row per model.
@@ -1485,6 +1519,7 @@ window.__ModuleLoader__.load({
       modelSwitchHint: '关闭后不再出现在对话的模型选择器中，此处仍可随时打开。',
       modelSwitchHintOff: '已关闭 {count} 个模型',
       providerSwitchLabel: '{name}（整个提供商）',
+      providerSwitchAria: '{action} {name}（整个提供商）',
       providerRowNoteOn: '该提供商的模型会出现在模型选择器中',
       providerRowNoteOff: '整个提供商已从模型选择器中隐藏',
       modelRowNoteOn: '会出现在模型选择器中',
@@ -1516,6 +1551,7 @@ window.__ModuleLoader__.load({
         'When off, it is left out of the conversation model picker. It stays listed here and can be turned back on at any time.',
       modelSwitchHintOff: '{count} model(s) off',
       providerSwitchLabel: '{name} (whole provider)',
+      providerSwitchAria: '{action} {name} (whole provider)',
       providerRowNoteOn: "This provider's models are offered in the model picker",
       providerRowNoteOff: 'The whole provider is hidden from the model picker',
       modelRowNoteOn: 'Offered in the model picker',
@@ -1659,9 +1695,29 @@ html {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 14px;
-  padding-top: 12px;
+  margin-top: 12px;
+  padding-top: 10px;
   border-top: .5px solid var(--dsw-alias-border-l2);
+}
+.dsh-settings-resize-provider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 32px;
+}
+.dsh-settings-resize-provider-row[data-disabled] .dsh-settings-resize-provider-name {
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-settings-resize-provider-name {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dsh-settings-resize-rowgroup-label {
   display: flex;
@@ -2191,13 +2247,18 @@ html {
           () =>
             ctx.slots.inject('settings.models.provider-card', () => {
               /*
-               * Register for the two provider families the Models page dispatches. A fixed
-               * list beats reading `configForms.describe()` here: the mirror may still be
-               * empty during boot, and a registration built from it would then never appear.
-               * A key this page never dispatches simply renders nothing.
+               * The Models page dispatches `settings.models.provider-card` with each card's
+               * settings namespace as the key. The three families use different namespaces:
+               *
+               *   llm-deepseek-account   DeepSeek 账号 (OAuth route)
+               *   llm-deepseek-api-key   DeepSeek      (API-key route)
+               *   llm-pi-ai              pi-ai routes (dshcapi and any hand-declared one)
+               *
+               * A fixed list beats reading `configForms.describe()` here: the mirror may still
+               * be empty during boot, and a key this page never dispatches renders nothing.
                */
               const disposers = []
-              for (const ns of ['llm-deepseek', 'llm-pi-ai']) {
+              for (const ns of ['llm-deepseek-account', 'llm-deepseek-api-key', 'llm-pi-ai']) {
                 disposers.push(
                   ctx.slots.register(
                     {
