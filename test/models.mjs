@@ -25,9 +25,17 @@ const check = (label, ok, detail) => {
 // ---------------------------------------------------------------------------------
 // 1. Host half: the filter hides models from listModels and leaves the catalog alone
 // ---------------------------------------------------------------------------------
-const host = await import(
-  'data:text/javascript;base64,' + Buffer.from(hostSource).toString('base64')
+// The Host half imports @deepseek-ai/schemastery, which this checkout cannot resolve on its
+// own path. Rewrite that one specifier to the profile's installed copy, write the module next
+// to the test, and import it.
+const SCHEMASTERY = 'C:/Users/HSG/.dsh/profiles/desktop/node_modules/@deepseek-ai/schemastery/lib/index.cjs'
+const hostForTest = hostSource.replace(
+  /from ['"]@deepseek-ai\/schemastery['"]/,
+  'from ' + JSON.stringify('file:///' + SCHEMASTERY),
 )
+const hostFile = path.join(root, 'test', '.host-under-test.mjs')
+fs.writeFileSync(hostFile, hostForTest, 'utf8')
+const host = await import('file:///' + hostFile.replace(/\\/g, '/'))
 
 const CATALOG = {
   deepseek: [
@@ -43,10 +51,16 @@ const registry = {
   async listModels(provider) {
     return this.catalog[provider] ?? []
   },
+  listProviders() {
+    return [
+      { id: 'deepseek', name: 'DeepSeek' },
+      { id: 'capi', name: 'dshcapi' },
+    ]
+  },
 }
 
 // The settings service the Host half talks to.
-const store = { 'dsh-settings-resize': { disabledModels: [] } }
+const store = { 'dsh-settings-resize': { disabledModels: [], disabledProviders: [] } }
 const listeners = new Map()
 const settings = {
   describe: () => [
@@ -91,7 +105,7 @@ check(
 )
 
 // --- switch one model off ---------------------------------------------------------
-await service.set({ provider: 'deepseek', modelId: 'deepseek-v4-pro', enabled: false })
+await service.setModel({ provider: 'deepseek', modelId: 'deepseek-v4-pro', enabled: false })
 
 const afterOff = await pickerIds('deepseek')
 check('the picker drops the switched-off model', !afterOff.includes('deepseek-v4-pro'), JSON.stringify(afterOff))
@@ -114,14 +128,14 @@ check(
 check('a models-updated event is announced', emitted.includes('llm/models-updated'))
 
 // --- switch it back on ------------------------------------------------------------
-await service.set({ provider: 'deepseek', modelId: 'deepseek-v4-pro', enabled: true })
+await service.setModel({ provider: 'deepseek', modelId: 'deepseek-v4-pro', enabled: true })
 check(
   'turning it back on restores the picker',
   (await pickerIds('deepseek')).includes('deepseek-v4-pro'),
 )
 
 // --- hiding every model of a provider --------------------------------------------
-await service.set({ provider: 'capi', modelId: 'codearts/deepseek-v4.1-flash', enabled: false })
+await service.setModel({ provider: 'capi', modelId: 'codearts/deepseek-v4.1-flash', enabled: false })
 check(
   'a fully hidden provider reports no models to the picker',
   (await pickerIds('capi')).length === 0,
@@ -130,6 +144,30 @@ check(
 check(
   'but its catalog row still exists for the Settings page',
   CATALOG.capi.length === 1,
+)
+
+// --- provider-level switch, official providers included ---------------------------
+await service.setProvider({ provider: 'deepseek', enabled: false })
+check(
+  'a switched-off provider leaves the picker provider list',
+  !(await registry.listProviders()).some((p) => p.id === 'deepseek'),
+  JSON.stringify((await registry.listProviders()).map((p) => p.id)),
+)
+check(
+  'a switched-off provider reports no models',
+  (await pickerIds('deepseek')).length === 0,
+  String((await pickerIds('deepseek')).length),
+)
+check(
+  'the provider setting is stored separately from models',
+  store['dsh-settings-resize'].disabledProviders.includes('deepseek'),
+  JSON.stringify(store['dsh-settings-resize'].disabledProviders),
+)
+await service.setProvider({ provider: 'deepseek', enabled: true })
+check(
+  'turning the provider back on restores it',
+  (await registry.listProviders()).some((p) => p.id === 'deepseek') &&
+    (await pickerIds('deepseek')).length > 0,
 )
 
 // --- restore all ------------------------------------------------------------------
@@ -142,7 +180,7 @@ check(
 )
 
 // --- uninstalling the plugin restores the picker ----------------------------------
-await service.set({ provider: 'deepseek', modelId: 'deepseek-flash', enabled: false })
+await service.setModel({ provider: 'deepseek', modelId: 'deepseek-flash', enabled: false })
 check('a model is hidden before uninstall', (await pickerIds('deepseek')).length === 1)
 
 // Re-apply so every cleanup can be collected and run, exactly as unload would.
@@ -285,6 +323,13 @@ function collect(node, out = []) {
 }
 function findSwitch(node, modelName) {
   if (node === null || typeof node !== 'object') return undefined
+  // A function component in the static tree (PillSwitch) is not expanded by collect; call it
+  // so its `role="switch"` button becomes visible.
+  if (typeof node.type === 'function') {
+    const rendered = node.type(node.props ?? {})
+    const hit = findSwitch(rendered, modelName)
+    if (hit !== undefined) return hit
+  }
   const p = node.props ?? {}
   if (p.role === 'switch' && typeof p['aria-label'] === 'string' && p['aria-label'].includes(modelName)) {
     return p

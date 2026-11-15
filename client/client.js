@@ -71,31 +71,39 @@ window.__ModuleLoader__.load({
     const RECORD_NS = 'dsh-settings-resize'
 
     /**
-     * Read the switched-off routes.
+     * Read the switch state from the plugin's own settings namespace.
      *
      * @param configForms - the client form registry.
-     * @returns a Set of `provider\u0000modelId` keys.
+     * @returns the hidden model keys and the hidden provider ids.
      */
-    function readDisabledKeys(configForms) {
+    function readSwitchState(configForms) {
       const form = configForms.get(RECORD_NS)
-      if (form === undefined || form === null) return new Set()
-      const list = form.getSnapshot().value?.disabledModels
-      if (!Array.isArray(list)) return new Set()
-      return new Set(
-        list
-          .filter((entry) => typeof entry?.provider === 'string' && typeof entry?.modelId === 'string')
-          .map((entry) => entry.provider + '\u0000' + entry.modelId),
-      )
+      const value = form?.getSnapshot?.()?.value ?? {}
+      const models = Array.isArray(value.disabledModels) ? value.disabledModels : []
+      const providers = Array.isArray(value.disabledProviders) ? value.disabledProviders : []
+      return {
+        models: new Set(
+          models
+            .filter((entry) => typeof entry?.provider === 'string' && typeof entry?.modelId === 'string')
+            .map((entry) => entry.provider + '\u0000' + entry.modelId),
+        ),
+        providers: new Set(providers.filter((id) => typeof id === 'string')),
+      }
     }
 
     /**
-     * Persist the switched-off routes through the shared write queue.
+     * Persist the switch state.
+     *
+     * Two separate fields are written, each with the complete list, so the form model never
+     * sees a partial update.
      *
      * @param configForms - the client form registry.
-     * @param keys - complete key set to store.
+     * @param state - the state to store.
      */
-    async function writeDisabledKeys(configForms, keys) {
-      const disabledModels = [...keys]
+    async function writeSwitchState(configForms, state) {
+      const form = configForms.get(RECORD_NS)
+      if (form === undefined || form === null) throw new Error('settings namespace unavailable')
+      const disabledModels = [...state.models]
         .map((key) => {
           const parts = key.split('\u0000')
           return { provider: parts[0], modelId: parts[1] }
@@ -105,14 +113,15 @@ window.__ModuleLoader__.load({
             left.provider.localeCompare(right.provider) ||
             left.modelId.localeCompare(right.modelId),
         )
-      await configForms.get(RECORD_NS).set('disabledModels', disabledModels)
+      await form.set('disabledModels', disabledModels)
+      await form.set('disabledProviders', [...state.providers].sort())
     }
 
     /**
      * Read every model a provider currently offers, straight from its settings row.
      *
      * Both provider families keep the catalog in the settings document, and neither is read
-     * through `listModels`, so this is unaffected by the picker filter.
+     * through `listModels`, so the Settings page is unaffected by the picker filter.
      *
      * @param configForms - the client form registry.
      * @param settingsNs - namespace owning the provider's configuration.
@@ -139,11 +148,33 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The switch row rendered inside one provider card.
+     * One pill switch, matching the shape Settings uses elsewhere.
      *
-     * It lists the provider's models with a switch each. Nothing is hidden on this page: a
-     * switched-off model is shown with an "off" badge, and turning it back on is the same
-     * gesture.
+     * @param props - `on`, `label`, `disabled`, `onChange`.
+     */
+    function PillSwitch(props) {
+      return h(
+        'button',
+        {
+          type: 'button',
+          role: 'switch',
+          'aria-checked': props.on,
+          'aria-label': props.label,
+          className: 'dsh-settings-resize-switch',
+          'data-on': props.on ? 'true' : undefined,
+          disabled: props.disabled,
+          onClick: props.onChange,
+        },
+        h('span', { 'aria-hidden': true }),
+      )
+    }
+
+    /**
+     * The switch block rendered inside one provider card.
+     *
+     * It offers a provider-level switch (which hides the whole provider from the conversation
+     * picker) and one switch per model. Nothing is hidden on this page: the state of each row
+     * is stated under its name, and the same gesture turns it back on.
      *
      * @param props - owner props (`provider`) plus `t` and the injected model controls.
      */
@@ -151,13 +182,14 @@ window.__ModuleLoader__.load({
       const { provider, t, configForms } = props
       const settingsNs = provider?.settingsNs
       const providerId = provider?.provider
-      const [keys, setKeys] = useState(() => readDisabledKeys(configForms))
+      const providedName = provider?.displayName
+      const [state, setState] = useState(() => readSwitchState(configForms))
       const [busy, setBusy] = useState('')
       const [notice, setNotice] = useState('')
       const useEffect = React.useEffect
 
       const refresh = useCallback(() => {
-        setKeys(readDisabledKeys(configForms))
+        setState(readSwitchState(configForms))
       }, [configForms])
 
       useEffect(() => {
@@ -176,37 +208,31 @@ window.__ModuleLoader__.load({
 
       const models = settingsNs === undefined ? [] : modelsOfProvider(configForms, settingsNs, providerId)
 
-      const toggle = useCallback(
-        async (model) => {
-          const key = providerId + '\u0000' + model.id
+      const commit = useCallback(
+        async (mutate, key) => {
           if (busy !== '') return
           setBusy(key)
           setNotice('')
           try {
-            const next = new Set(readDisabledKeys(configForms))
-            if (next.has(key)) next.delete(key)
-            else next.add(key)
-            await writeDisabledKeys(configForms, next)
-            setKeys(next)
+            // Compose from a fresh read so two quick clicks cannot overwrite each other.
+            const current = readSwitchState(configForms)
+            const next = mutate(current)
+            await writeSwitchState(configForms, next)
+            setState(next)
           } catch (error) {
             setNotice(t('modelWriteFailed', { message: String(error?.message ?? error) }))
           } finally {
             setBusy('')
           }
         },
-        [busy, configForms, providerId, t],
+        [busy, configForms, t],
       )
 
       if (models.length === 0) return null
 
-      const offCount = models.filter((model) => keys.has(providerId + '\u0000' + model.id)).length
+      const providerOff = state.providers.has(providerId)
+      const offCount = models.filter((model) => state.models.has(providerId + '\u0000' + model.id)).length
 
-      /*
-       * Layout follows the card's own rows: a label column on the left, the control on the
-       * right, with the explanatory line under the label — the shape the rest of this page
-       * uses for a setting. The switch is the same 34×20 pill as elsewhere in Settings, so it
-       * reads as part of the page rather than as an inserted panel.
-       */
       return h(
         'div',
         { className: 'dsh-settings-resize-rowgroup' },
@@ -215,20 +241,64 @@ window.__ModuleLoader__.load({
           { className: 'dsh-settings-resize-rowgroup-label' },
           t('modelSwitchTitle'),
           h('span', { className: 'dsh-settings-resize-rowgroup-note' }, t('modelSwitchHint')),
-          offCount === 0
-            ? null
-            : h(
-                'span',
-                { className: 'dsh-settings-resize-rowgroup-note dsh-settings-resize-rowgroup-count' },
-                t('modelSwitchHintOff', { count: offCount }),
-              ),
         ),
         notice === ''
           ? null
           : h('div', { className: 'dsh-settings-resize-notice', role: 'status' }, notice),
+
+        // Provider-level switch: controls whether this provider appears at all.
+        h(
+          'div',
+          {
+            className: 'dsh-settings-resize-model-row',
+            'data-disabled': providerOff ? 'true' : undefined,
+          },
+          h(
+            'div',
+            { className: 'dsh-settings-resize-model-text' },
+            h(
+              'span',
+              { className: 'dsh-settings-resize-model-name' },
+              t('providerSwitchLabel', { name: providedName ?? providerId }),
+            ),
+            h(
+              'span',
+              { className: 'dsh-settings-resize-model-note' },
+              providerOff ? t('providerRowNoteOff') : t('providerRowNoteOn'),
+            ),
+          ),
+          h(PillSwitch, {
+            on: !providerOff,
+            label:
+              (providerOff ? t('modelEnable') : t('modelDisable')) +
+              ' ' +
+              (providedName ?? providerId),
+            disabled: busy !== '',
+            onChange: () =>
+              commit(
+                (current) => {
+                  const providers = new Set(current.providers)
+                  if (providerOff) providers.delete(providerId)
+                  else providers.add(providerId)
+                  return { models: current.models, providers }
+                },
+                'provider',
+              ),
+          }),
+        ),
+
+        offCount === 0
+          ? null
+          : h(
+              'span',
+              { className: 'dsh-settings-resize-rowgroup-count' },
+              t('modelSwitchHintOff', { count: offCount }),
+            ),
+
+        // One row per model.
         ...models.map((model) => {
           const key = providerId + '\u0000' + model.id
-          const off = keys.has(key)
+          const off = state.models.has(key)
           return h(
             'div',
             {
@@ -246,38 +316,38 @@ window.__ModuleLoader__.load({
                 off ? t('modelRowNoteOff') : t('modelRowNoteOn'),
               ),
             ),
-            h(
-              'button',
-              {
-                type: 'button',
-                role: 'switch',
-                'aria-checked': !off,
-                'aria-label': (off ? t('modelEnable') : t('modelDisable')) + ' ' + model.name,
-                className: 'dsh-settings-resize-model-switch',
-                'data-on': off ? undefined : 'true',
-                disabled: busy !== '',
-                onClick: () => toggle(model),
-              },
-              h('span', { 'aria-hidden': true }),
-            ),
+            h(PillSwitch, {
+              on: !off,
+              label: (off ? t('modelEnable') : t('modelDisable')) + ' ' + model.name,
+              disabled: busy !== '',
+              onChange: () =>
+                commit(
+                  (current) => {
+                    const models = new Set(current.models)
+                    if (off) models.delete(key)
+                    else models.add(key)
+                    return { models, providers: current.providers }
+                  },
+                  key,
+                ),
+            }),
           )
         }),
       )
     }
 
     /**
-     * Reveal every switched-off model. Also the recovery path when a stored list outlives a
-     * provider rename and nothing else would clear it.
+     * Reveal everything at once, from a footer link on the Models page.
      *
-     * @param props - `t` and the injected controls.
+     * @param props - `t` and the injected model controls.
      */
     function RestoreAllModels(props) {
       const { t, configForms } = props
-      const [keys, setKeys] = useState(() => readDisabledKeys(configForms))
+      const [state, setState] = useState(() => readSwitchState(configForms))
       const [busy, setBusy] = useState(false)
       const useEffect = React.useEffect
 
-      const refresh = useCallback(() => setKeys(readDisabledKeys(configForms)), [configForms])
+      const refresh = useCallback(() => setState(readSwitchState(configForms)), [configForms])
       useEffect(() => {
         const form = configForms.get(RECORD_NS)
         if (form === undefined || form === null) return () => {}
@@ -292,7 +362,8 @@ window.__ModuleLoader__.load({
         }
       }, [configForms, refresh])
 
-      if (keys.size === 0) return null
+      const total = state.models.size + state.providers.size
+      if (total === 0) return null
 
       return h(
         'div',
@@ -305,14 +376,15 @@ window.__ModuleLoader__.load({
             onClick: async () => {
               setBusy(true)
               try {
-                await writeDisabledKeys(configForms, new Set())
-                setKeys(new Set())
+                const empty = { models: new Set(), providers: new Set() }
+                await writeSwitchState(configForms, empty)
+                setState(empty)
               } finally {
                 setBusy(false)
               }
             },
           },
-          t('modelRestoreAll', { count: keys.size }),
+          t('modelRestoreAll', { count: total }),
         ),
       )
     }
@@ -338,8 +410,11 @@ window.__ModuleLoader__.load({
       footnote:
         '透明度只让弹窗底衬变透，文字与控件保持清晰；拖到 100% 时底衬完全透明，弹窗边缘仍保留一圈描边，方便定位。窗口较小时宽高会自动缩小，不会超出屏幕。',
       modelSwitchTitle: '在对话中显示',
-      modelSwitchHint: '关闭后该模型不再出现在对话的模型选择器中，此处仍可随时打开。',
-      modelSwitchHintOff: '已关闭 {count} 个',
+      modelSwitchHint: '关闭后不再出现在对话的模型选择器中，此处仍可随时打开。',
+      modelSwitchHintOff: '已关闭 {count} 个模型',
+      providerSwitchLabel: '{name}（整个提供商）',
+      providerRowNoteOn: '该提供商的模型会出现在模型选择器中',
+      providerRowNoteOff: '整个提供商已从模型选择器中隐藏',
       modelRowNoteOn: '会出现在模型选择器中',
       modelRowNoteOff: '已从模型选择器中隐藏',
       modelEnable: '启用',
@@ -366,8 +441,11 @@ window.__ModuleLoader__.load({
         'Transparency fades the dialog surface only, so text and controls stay sharp. At 100% the surface is fully clear and a thin outline keeps the dialog edge findable. When the window is small, the size shrinks to fit the screen.',
       modelSwitchTitle: 'Show in conversation',
       modelSwitchHint:
-        'When off, the model is left out of the conversation model picker. It stays listed here and can be turned back on at any time.',
-      modelSwitchHintOff: '{count} off',
+        'When off, it is left out of the conversation model picker. It stays listed here and can be turned back on at any time.',
+      modelSwitchHintOff: '{count} model(s) off',
+      providerSwitchLabel: '{name} (whole provider)',
+      providerRowNoteOn: "This provider's models are offered in the model picker",
+      providerRowNoteOff: 'The whole provider is hidden from the model picker',
       modelRowNoteOn: 'Offered in the model picker',
       modelRowNoteOff: 'Hidden from the model picker',
       modelEnable: 'On',
@@ -591,7 +669,7 @@ html {
   line-height: 16px;
   color: var(--dsw-alias-label-tertiary);
 }
-.dsh-settings-resize-model-switch {
+.dsh-settings-resize-switch {
   flex: none;
   position: relative;
   box-sizing: border-box;
@@ -605,7 +683,7 @@ html {
   cursor: pointer;
   transition: background .15s ease;
 }
-.dsh-settings-resize-model-switch > span {
+.dsh-settings-resize-switch > span {
   position: absolute;
   top: 2px;
   left: 2px;
@@ -615,13 +693,13 @@ html {
   background: #fff;
   transition: transform .15s ease;
 }
-.dsh-settings-resize-model-switch[data-on] {
+.dsh-settings-resize-switch[data-on] {
   background: var(--dsw-alias-brand-primary);
 }
-.dsh-settings-resize-model-switch[data-on] > span {
+.dsh-settings-resize-switch[data-on] > span {
   transform: translateX(14px);
 }
-.dsh-settings-resize-model-switch:disabled {
+.dsh-settings-resize-switch:disabled {
   opacity: .45;
   cursor: default;
 }

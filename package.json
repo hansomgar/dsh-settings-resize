@@ -28,6 +28,9 @@
     "README.md",
     "README.en.md"
   ],
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
