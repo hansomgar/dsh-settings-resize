@@ -1221,6 +1221,11 @@ window.__ModuleLoader__.load({
       if (response?.ok !== true) {
         throw new Error(response?.error?.message ?? 'settings write rejected')
       }
+      // Fold the accepted view into the shared mirror at once. `acceptView` lives on the
+      // describe face (what `configForms.describe()` returns), not on a per-namespace form, and
+      // it is optional: the forwarded `settings/document-updated` event refreshes the mirror
+      // shortly after anyway, so a mirror without this method still converges.
+      configForms.describe?.()?.acceptView?.(response.value)
       return true
     }
 
@@ -2329,12 +2334,14 @@ html {
        * the dependency makes the loader hold this plugin inactive until the service exists,
        * so `apply` always sees a live locale service.
        *
-       * `configForms` is the Client face of the shared settings write queue, and `remote` is
-       * the RPC face that actually persists a switch (`remote.settings.mutate`). Both are hard
-       * dependencies: with either missing the switches cannot read or write, and a plugin that
-       * starts before them would silently register a block whose switches do nothing.
+       * `configForms` is the Client face of the shared settings write queue, and
+       * `remote.settings` is the RPC face that actually persists a switch.
+       *
+       * `remote.settings` is a **sub-namespace dependency**: the context only resolves
+       * `ctx.remote.settings` when that exact key is declared, so listing the parent `remote`
+       * alone throws `cannot get property "remote.settings" without inject` at the first write.
        */
-      inject: ['slots', 'locale', 'configForms', 'remote'],
+      inject: ['slots', 'locale', 'configForms', 'remote', 'remote.settings'],
       apply: apply,
     }
   },
