@@ -280,10 +280,10 @@ const cardRegs = registrations.filter((r) => r.options.name === 'settings.models
 check('registers switches on the provider-card slot', cardRegs.length > 0, String(cardRegs.length))
 check(
   'one registration per provider family',
-  // The Models page dispatches these three namespaces, including the OAuth account route,
-  // which is a separate namespace from the API-key route.
-  cardRegs.some((r) => r.options.key === 'llm-deepseek-account') &&
-    cardRegs.some((r) => r.options.key === 'llm-deepseek-api-key') &&
+  // The Models page dispatches these three namespaces: the account route, the API-key route,
+  // and the pi-ai family (dshcapi plus any hand-declared route).
+  cardRegs.some((r) => r.options.key === 'llm-deepseek') &&
+    cardRegs.some((r) => r.options.key === 'llm-deepseek-account') &&
     cardRegs.some((r) => r.options.key === 'llm-pi-ai'),
   cardRegs.map((r) => r.options.key).join(','),
 )
@@ -293,7 +293,7 @@ check(
 )
 
 // The card component lists models from the settings document, with switches.
-const deepseekReg = cardRegs.find((r) => r.options.key === 'llm-deepseek-api-key')
+const deepseekReg = cardRegs.find((r) => r.options.key === 'llm-deepseek')
 const t = (key, params) => {
   const dict = {
     modelSwitchTitle: '在对话中显示',
@@ -305,6 +305,7 @@ const t = (key, params) => {
     providerRowNoteOff: '整个提供商已从模型选择器中隐藏',
     modelRowNoteOn: '会出现在模型选择器中',
     modelRowNoteOff: '已从模型选择器中隐藏',
+    modelRowNoteFollowsProvider: '随提供商一起隐藏',
     modelEnable: '启用',
     modelDisable: '关闭',
     modelRestoreAll: '全部恢复（{count}）',
@@ -415,6 +416,39 @@ check(
   clientStore['dsh-settings-resize'].disabledModels.length === 0,
   JSON.stringify(clientStore['dsh-settings-resize'].disabledModels),
 )
+
+// --- provider off removes the model switches entirely ------------------------------
+// The approved rule: once the whole provider is off, no model row carries a switch, and the
+// rows say they follow the provider.
+clientStore['dsh-settings-resize'].disabledProviders = ['llm-deepseek']
+const tree3 = deepseekReg.component({
+  provider: { provider: 'llm-deepseek', settingsNs: 'llm-deepseek', displayName: 'DeepSeek' },
+  t,
+  ...props,
+})
+const switchesWhenOff = (function count(node) {
+  if (node === null || typeof node !== 'object') return 0
+  let total = 0
+  if (typeof node.type === 'function') total += count(node.type(node.props ?? {}))
+  const p = node.props ?? {}
+  if (p.role === 'switch') total += 1
+  for (const child of node.children ?? []) total += count(child)
+  return total
+})(tree3)
+check(
+  'a switched-off provider renders only its own switch, no model switches',
+  switchesWhenOff === 1,
+  String(switchesWhenOff),
+)
+check(
+  'model rows say they follow the provider',
+  collect(tree3).includes('随提供商一起隐藏'),
+)
+check(
+  'the provider caption states it is hidden',
+  collect(tree3).includes('整个提供商已从模型选择器中隐藏'),
+)
+clientStore['dsh-settings-resize'].disabledProviders = []
 
 const failed = results.filter((ok) => !ok).length
 console.log(failed === 0 ? '\nALL MODEL SWITCH CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`)
