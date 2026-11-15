@@ -238,16 +238,24 @@ const clientStore = {
   'llm-pi-ai': { providers: { capi: { displayName: 'dshcapi', models: [{ id: 'codearts/deepseek-v4.1-flash', name: 'deepseek-v4.1-flash' }] } } },
 }
 const writes = []
+// Mirrors the real write path: the switch calls settings.mutate and expects { ok: true }.
+const clientRemote = {
+  settings: {
+    mutate: async (ns, ops, _revision) => {
+      for (const op of ops) {
+        writes.push({ ns, key: op.path[0] })
+        clientStore[ns] = { ...clientStore[ns], [op.path[0]]: op.value }
+      }
+      return { ok: true, value: { ns } }
+    },
+  },
+}
 const clientForms = {
   get: (ns) =>
     ns in clientStore
       ? {
-          getSnapshot: () => ({ value: JSON.parse(JSON.stringify(clientStore[ns])) }),
+          getSnapshot: () => ({ value: JSON.parse(JSON.stringify(clientStore[ns])), revision: 1 }),
           subscribe: () => () => {},
-          set: async (key, value) => {
-            writes.push({ ns, key })
-            clientStore[ns] = { ...clientStore[ns], [key]: value }
-          },
         }
       : undefined,
   describe: () => ({
@@ -264,6 +272,7 @@ const clientCtx = {
   effect: (fn) => fn(),
   get: () => undefined,
   configForms: clientForms,
+  remote: clientRemote,
   locale: { register: () => () => {}, bind: () => (k) => k },
   slots: {
     inject: (key, cb) => cb(),

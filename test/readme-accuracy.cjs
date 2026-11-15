@@ -39,7 +39,8 @@ check('documents both custom properties of the surface', en.includes('--dsh-sett
 // --- locale contract --------------------------------------------------------------
 check(
   'documents the hard locale dependency',
-  /\['slots', 'locale'\]/.test(en) && /inject: \['slots', 'locale', 'configForms'\]/.test(client),
+  /\['slots', 'locale'\]/.test(en) &&
+    /inject: \['slots', 'locale', 'configForms', 'remote'\]/.test(client),
 )
 // `ctx.get('locale')` may appear only as the explanation of the bug, never as advice.
 check(

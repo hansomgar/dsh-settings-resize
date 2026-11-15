@@ -94,15 +94,23 @@ window.__ModuleLoader__.load({
     /**
      * Persist the switch state.
      *
-     * Two separate fields are written, each with the complete list, so the form model never
-     * sees a partial update.
+     * The write goes through the settings Remote the Models page itself uses:
+     * `ctx.remote.settings.mutate(ns, ops, revision)` answers `{ ok, value }`, and the mirror is
+     * refreshed only on `ok`. Failure is therefore reportable instead of silent — a switch that
+     * cannot be stored must say so rather than flip back without explanation.
+     *
+     * Both fields are written in one operation list, so the document never holds a state where
+     * one list is updated and the other is stale.
      *
      * @param configForms - the client form registry.
+     * @param remote - the Client remote face (`ctx.remote`).
      * @param state - the state to store.
+     * @returns whether the write was accepted.
      */
-    async function writeSwitchState(configForms, state) {
+    async function writeSwitchState(configForms, remote, state) {
       const form = configForms.get(RECORD_NS)
       if (form === undefined || form === null) throw new Error('settings namespace unavailable')
+
       const disabledModels = [...state.models]
         .map((key) => {
           const parts = key.split('\u0000')
@@ -113,8 +121,24 @@ window.__ModuleLoader__.load({
             left.provider.localeCompare(right.provider) ||
             left.modelId.localeCompare(right.modelId),
         )
-      await form.set('disabledModels', disabledModels)
-      await form.set('disabledProviders', [...state.providers].sort())
+      const disabledProviders = [...state.providers].sort()
+
+      const snapshot = form.getSnapshot()
+      const settings = remote?.settings
+      if (settings === undefined) throw new Error('settings remote unavailable')
+
+      const response = await settings.mutate(
+        RECORD_NS,
+        [
+          { op: 'set', path: ['disabledModels'], value: disabledModels },
+          { op: 'set', path: ['disabledProviders'], value: disabledProviders },
+        ],
+        snapshot?.revision,
+      )
+      if (response?.ok !== true) {
+        throw new Error(response?.error?.message ?? 'settings write rejected')
+      }
+      return true
     }
 
     /**
@@ -179,7 +203,7 @@ window.__ModuleLoader__.load({
      * @param props - owner props (`provider`) plus `t` and the injected model controls.
      */
     function ProviderModelSwitches(props) {
-      const { provider, t, configForms } = props
+      const { provider, t, configForms, remote } = props
       const settingsNs = provider?.settingsNs
       const providerId = provider?.provider
       const providedName = provider?.displayName
@@ -217,7 +241,7 @@ window.__ModuleLoader__.load({
             // Compose from a fresh read so two quick clicks cannot overwrite each other.
             const current = readSwitchState(configForms)
             const next = mutate(current)
-            await writeSwitchState(configForms, next)
+            await writeSwitchState(configForms, remote, next)
             setState(next)
           } catch (error) {
             setNotice(t('modelWriteFailed', { message: String(error?.message ?? error) }))
@@ -362,7 +386,7 @@ window.__ModuleLoader__.load({
      * @param props - `t` and the injected model controls.
      */
     function RestoreAllModels(props) {
-      const { t, configForms } = props
+      const { t, configForms, remote } = props
       const [state, setState] = useState(() => readSwitchState(configForms))
       const [busy, setBusy] = useState(false)
       const useEffect = React.useEffect
@@ -397,7 +421,7 @@ window.__ModuleLoader__.load({
               setBusy(true)
               try {
                 const empty = { models: new Set(), providers: new Set() }
-                await writeSwitchState(configForms, empty)
+                await writeSwitchState(configForms, remote, empty)
                 setState(empty)
               } finally {
                 setBusy(false)
@@ -610,17 +634,16 @@ html {
 .dsh-settings-resize-rowgroup {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: .5px solid var(--dsw-alias-border-l2);
+  gap: 2px;
+  margin-top: 2px;
+  padding: 0 0 2px;
 }
 .dsh-settings-resize-provider-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 30px;
+  min-height: 32px;
 }
 .dsh-settings-resize-provider-caption {
   font-size: 12px;
@@ -632,27 +655,23 @@ html {
   white-space: nowrap;
 }
 .dsh-settings-resize-rowgroup-label {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--dsw-alias-label-primary);
-}
-.dsh-settings-resize-rowgroup-note {
+  margin-top: 6px;
   font-size: 12px;
   line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
+  font-weight: 400;
+  color: var(--dsw-alias-label-secondary);
 }
 .dsh-settings-resize-rowgroup-count {
-  color: var(--dsw-alias-label-secondary);
+  margin-left: 6px;
+  color: var(--dsw-alias-label-tertiary);
 }
 .dsh-settings-resize-model-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 34px;
+  min-height: 30px;
+  padding: 3px 0;
   font-size: 13px;
   line-height: 20px;
   color: var(--dsw-alias-label-primary);
@@ -1154,7 +1173,10 @@ html {
        * its own.
        */
       const configForms = ctx.configForms
-      if (configForms !== undefined) {
+      // The settings Remote is what actually persists a switch; without it the block cannot
+      // write, so the whole feature is only registered when both faces exist.
+      const remote = ctx.remote
+      if (configForms !== undefined && remote !== undefined) {
         ctx.effect(
           () =>
             ctx.slots.inject('settings.models.provider-card', () => {
@@ -1178,7 +1200,7 @@ html {
                       name: 'settings.models.provider-card',
                       key: ns,
                       locale: NS,
-                      inject: () => ({ configForms }),
+                      inject: () => ({ configForms, remote }),
                     },
                     ProviderModelSwitches,
                   ),
@@ -1202,7 +1224,7 @@ html {
                   id: 'settings-resize-restore-models',
                   order: 90,
                   locale: NS,
-                  inject: () => ({ configForms }),
+                  inject: () => ({ configForms, remote }),
                 },
                 RestoreAllModels,
               ),
@@ -1224,11 +1246,12 @@ html {
        * the dependency makes the loader hold this plugin inactive until the service exists,
        * so `apply` always sees a live locale service.
        *
-       * `configForms` is the Client face of the shared settings write queue: it is how the
-       * model switches read and edit the provider catalogs without a Host half (a bundle's
-       * client factory has no `host.call`; that bridge is for cordis dynamic packages).
+       * `configForms` is the Client face of the shared settings write queue, and `remote` is
+       * the RPC face that actually persists a switch (`remote.settings.mutate`). Both are hard
+       * dependencies: with either missing the switches cannot read or write, and a plugin that
+       * starts before them would silently register a block whose switches do nothing.
        */
-      inject: ['slots', 'locale', 'configForms'],
+      inject: ['slots', 'locale', 'configForms', 'remote'],
       apply: apply,
     }
   },
