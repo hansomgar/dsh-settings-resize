@@ -909,10 +909,12 @@ function liveRegistry(ctx) {
  */
 function installFilters(registry, state) {
   const INSTALLED_MODELS = Symbol.for('dsh-settings-resize.listModels')
+  const INSTALLED_PROVIDERS = Symbol.for('dsh-settings-resize.listProviders')
   const SHARED_STATE = Symbol.for('dsh-settings-resize.state')
 
   const previousModels = registry[INSTALLED_MODELS] ?? registry.listModels
-  if (typeof previousModels !== 'function') {
+  const previousProviders = registry[INSTALLED_PROVIDERS] ?? registry.listProviders
+  if (typeof previousModels !== 'function' || typeof previousProviders !== 'function') {
     return () => {}
   }
 
@@ -921,48 +923,65 @@ function installFilters(registry, state) {
   registry[SHARED_STATE] = shared
 
   /*
-   * Only `listModels` is wrapped, never `listProviders`.
+   * Two different hiding mechanisms, because the two surfaces read different things.
    *
-   * `Settings → Models` renders one card per provider from `llm.listProviders()`, so hiding a
-   * provider there would remove the very card the switch lives on. The conversation picker
-   * instead builds its groups from `listModels(provider)` and drops empty ones —
-   * `buildModelCatalog` ends with `.filter((group) => group.models.length > 0)` — so reporting
-   * no models is enough to remove a provider from every picker.
+   * **Ordinary providers — wrap `listModels` only.** The conversation picker builds its groups
+   * from `listModels(provider)` and drops empty ones (`buildModelCatalog` ends with
+   * `.filter((group) => group.models.length > 0)`), so reporting no models removes the provider
+   * from every picker. `listProviders` is left alone because `Settings → Models` renders one
+   * card per entry in it.
    *
-   * ## Why the account route is exempt from the provider-level switch
-   *
-   * The Models page keeps an account row only when the route still advertises a model:
+   * **The account route — wrap `listProviders` instead.** Its card survives only while the route
+   * still advertises a model:
    *
    *   s.rows = rows.filter((row) =>
    *     row.entry.provider !== 'deepseek-account' || row.accountAvailable === true)
    *
-   * and `accountAvailable` is exactly "this route's catalog group has at least one model". A
-   * provider-level switch on `deepseek-account` would therefore delete its own card — there is
-   * no way to empty the picker while keeping the row, because both read the same catalog.
-   * Its models can still be switched off one by one, which leaves the card in place.
+   * where `accountAvailable` is "its catalog group has at least one model". Emptying
+   * `listModels` would therefore delete the card, so this route keeps its models and is hidden
+   * by dropping it from `listProviders` — the row stays (its `active` flag simply turns false)
+   * while every picker loses the provider.
    */
   const ACCOUNT_PROVIDER = 'deepseek-account'
 
   const patchedModels = async function listModels(provider) {
     const models = await previousModels.call(this, provider)
     const hidden = shared.state
-    // A hidden provider reports no models, which is what removes it from the pickers. The
-    // account route is excluded: emptying it would drop its own Settings card.
-    if (provider !== ACCOUNT_PROVIDER && hidden.providers.has(provider)) return []
+    // The account route is hidden through listProviders; emptying its models would drop its card.
+    if (provider === ACCOUNT_PROVIDER) {
+      if (!Array.isArray(models) || hidden.models.size === 0) return models
+      return models.filter((model) => !hidden.models.has(modelKey(provider, model?.id)))
+    }
+    if (hidden.providers.has(provider)) return []
     if (!Array.isArray(models) || hidden.models.size === 0) return models
     return models.filter((model) => !hidden.models.has(modelKey(provider, model?.id)))
   }
 
+  const patchedProviders = function listProviders() {
+    const providers = previousProviders.call(this)
+    const hidden = shared.state
+    if (!Array.isArray(providers)) return providers
+    // Only the account route is dropped here; every other provider keeps its Settings card and
+    // is hidden through listModels instead.
+    return providers.filter(
+      (provider) => provider?.id !== ACCOUNT_PROVIDER || !hidden.providers.has(ACCOUNT_PROVIDER),
+    )
+  }
+
   registry[INSTALLED_MODELS] = previousModels
+  registry[INSTALLED_PROVIDERS] = previousProviders
   registry.listModels = patchedModels
+  registry.listProviders = patchedProviders
 
   let disposed = false
   return () => {
     if (disposed) return
     disposed = true
-    // Only undo our own wrapper; another plugin may have wrapped on top.
+    // Only undo our own wrappers; another plugin may have wrapped on top.
     if (registry.listModels === patchedModels) registry.listModels = previousModels
+    if (registry.listProviders === patchedProviders) registry.listProviders = previousProviders
     delete registry[INSTALLED_MODELS]
+    delete registry[INSTALLED_PROVIDERS]
     delete registry[SHARED_STATE]
   }
 }
@@ -1448,16 +1467,15 @@ window.__ModuleLoader__.load({
       if (providerId === undefined) return null
 
       /*
-       * The account route cannot be switched off as a whole.
+       * Every provider gets a provider-level switch, including the account route.
        *
-       * The Models page keeps its card only while that route still advertises a model, and the
-       * card's availability is derived from the same catalog the picker reads. Emptying the
-       * catalog would therefore delete the card itself, so this route offers per-model switches
-       * only — switching off every model still removes the group from every picker.
+       * The Host hides the account route through `listProviders` rather than by emptying its
+       * models, because the Models page drops that card as soon as its catalog group is empty.
+       * Its models therefore stay listed here while the provider itself leaves every picker.
        */
-      const providerSwitchable = providerId !== 'deepseek-account'
+      const providerSwitchable = true
 
-      const providerOff = providerSwitchable && state.providers.has(providerId)
+      const providerOff = state.providers.has(providerId)
       const offCount = models.filter((model) => state.models.has(providerId + '\u0000' + model.id)).length
 
       /*

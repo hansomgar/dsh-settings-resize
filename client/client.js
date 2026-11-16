@@ -337,16 +337,15 @@ window.__ModuleLoader__.load({
       if (providerId === undefined) return null
 
       /*
-       * The account route cannot be switched off as a whole.
+       * Every provider gets a provider-level switch, including the account route.
        *
-       * The Models page keeps its card only while that route still advertises a model, and the
-       * card's availability is derived from the same catalog the picker reads. Emptying the
-       * catalog would therefore delete the card itself, so this route offers per-model switches
-       * only — switching off every model still removes the group from every picker.
+       * The Host hides the account route through `listProviders` rather than by emptying its
+       * models, because the Models page drops that card as soon as its catalog group is empty.
+       * Its models therefore stay listed here while the provider itself leaves every picker.
        */
-      const providerSwitchable = providerId !== 'deepseek-account'
+      const providerSwitchable = true
 
-      const providerOff = providerSwitchable && state.providers.has(providerId)
+      const providerOff = state.providers.has(providerId)
       const offCount = models.filter((model) => state.models.has(providerId + '\u0000' + model.id)).length
 
       /*

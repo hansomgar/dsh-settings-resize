@@ -55,14 +55,12 @@ const registry = {
   },
   listProviders() {
     return [
+      { id: 'deepseek-account', name: 'DeepSeek 账号' },
       { id: 'deepseek', name: 'DeepSeek' },
       { id: 'capi', name: 'dshcapi' },
     ]
   },
 }
-
-// Kept so a later check can prove the plugin never replaces it.
-const originalListProviders = registry.listProviders
 
 // The settings service the Host half talks to.
 const store = { 'dsh-settings-resize': { disabledModels: [], disabledProviders: [] } }
@@ -105,13 +103,13 @@ const service = ctx.dshSettingsResizeModels
 check('host exposes the model switch service', service !== undefined)
 check('applying the plugin wraps listModels', registry.listModels !== undefined)
 
-// `listProviders` must stay untouched: Settings → Models renders one card per entry in this
-// list, so a wrapped list would delete the provider's own card — including the switch that
-// turns it back on. Pickers drop the group instead, because a hidden provider lists no models.
+// `listProviders` is wrapped, but only to drop the account route: every other provider keeps
+// its Settings card and is hidden through listModels instead.
 check(
-  'listProviders is left untouched so every Settings card keeps rendering',
-  registry.listProviders === originalListProviders,
-  registry.listProviders === originalListProviders ? 'original' : 'replaced',
+  'listProviders keeps every non-account provider',
+  (await registry.listProviders()).some((p) => p.id === 'deepseek') &&
+    (await registry.listProviders()).some((p) => p.id === 'capi'),
+  JSON.stringify((await registry.listProviders()).map((p) => p.id)),
 )
 
 // The filter runs on the Host, so `llm` has to be a declared dependency. Without it the plugin
@@ -210,13 +208,24 @@ check(
 // The account route keeps advertising its models even when the switch names it, because the
 // Models page drops that card as soon as the route lists nothing. Its own per-model switches
 // still work, so emptying it model by model is unaffected.
+// The account route is hidden through `listProviders`, not by emptying its models: the Models
+// page drops that card as soon as its catalog group is empty, so its models must stay listed.
 await service.setProvider({ provider: 'deepseek-account', enabled: false })
+check(
+  'the account route leaves the picker provider list',
+  !(await registry.listProviders()).some((p) => p.id === 'deepseek-account'),
+  JSON.stringify((await registry.listProviders()).map((p) => p.id)),
+)
 check(
   'the account route keeps its models so its Settings card survives',
   (await pickerIds('deepseek-account')).length > 0,
   String((await pickerIds('deepseek-account')).length),
 )
 await service.setProvider({ provider: 'deepseek-account', enabled: true })
+check(
+  'turning the account route back on restores it',
+  (await registry.listProviders()).some((p) => p.id === 'deepseek-account'),
+)
 
 await service.setProvider({ provider: 'deepseek', enabled: true })
 check(
@@ -481,12 +490,12 @@ const accountTree = accountReg.component({
   t,
   ...accountProps,
 })
-// The account route must NOT offer a provider-level switch: the Models page keeps that card
-// only while the route still advertises a model, so emptying its catalog would delete the card.
+// The account route now offers a provider-level switch too: the Host hides it through
+// `listProviders` (which leaves its Settings row in place) rather than by emptying its models.
 check(
-  'the account route offers no provider-level switch',
-  accountTree !== null && findSwitch(accountTree, '整个提供商') === undefined,
-  accountTree === null ? 'rendered null' : 'provider switch present',
+  'the account route offers a provider-level switch',
+  accountTree !== null && findSwitch(accountTree, '整个提供商') !== undefined,
+  accountTree === null ? 'rendered null' : 'provider switch missing',
 )
 
 // Its models come from the remote listing, not the settings document, so the card still shows
