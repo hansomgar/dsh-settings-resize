@@ -366,10 +366,20 @@ const clientCtx = {
   },
 }
 
-mods[0].factory(() => React).apply(clientCtx)
+const clientExports = mods[0].factory(() => React)
+clientExports.apply(clientCtx)
 
 const cardRegs = registrations.filter((r) => r.options.name === 'settings.models.provider-card')
 check('registers switches on the provider-card slot', cardRegs.length > 0, String(cardRegs.length))
+
+// Every remote namespace the component touches must be a declared dependency. A missing key
+// throws at the first call, and a catch around it turns the card into a silent blank.
+const declaredInject = JSON.stringify(clientExports.inject ?? [])
+check(
+  'the client declares both remote namespaces it calls',
+  declaredInject.includes('"remote.settings"') && declaredInject.includes('"remote.session"'),
+  declaredInject,
+)
 check(
   'one registration per provider family',
   // The Models page dispatches these three namespaces: the account route, the API-key route,

@@ -72,9 +72,9 @@ assert('module id is dsh-settings-resize', mods.length === 1 && mods[0].id === '
 const exported = mods[0].factory(requireStub)
 assert('exports.name', exported.name === 'dsh-settings-resize')
 assert(
-  'exports.inject declares slots, locale, configForms and remote.settings',
+  'exports.inject declares slots, locale, configForms and both remote namespaces',
   JSON.stringify(exported.inject) ===
-    '["slots","locale","configForms","remote","remote.settings"]',
+    '["slots","locale","configForms","remote","remote.settings","remote.session"]',
   JSON.stringify(exported.inject),
 )
 assert('exports.apply is a function', typeof exported.apply === 'function')

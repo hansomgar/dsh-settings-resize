@@ -272,22 +272,36 @@ window.__ModuleLoader__.load({
         const read = async () => {
           try {
             const response = await remote.session.modelCatalog()
-            if (!live || response?.ok !== true) return
+            if (!live) return
+            if (response?.ok !== true) {
+              setNotice(
+                t('modelWriteFailed', {
+                  message: String(response?.error?.message ?? 'model catalog unavailable'),
+                }),
+              )
+              return
+            }
             const group = (response.value?.groups ?? []).find((entry) => entry.id === providerId)
             const rows = (group?.models ?? [])
               .filter((model) => typeof model?.id === 'string')
               .map((model) => ({ id: model.id, name: model.name ?? model.id }))
             remoteCatalogCache.set(providerId, rows)
             setCatalogModels(rows)
-          } catch {
-            // A failed listing simply leaves the section empty.
+          } catch (error) {
+            // Surface the reason instead of rendering a silently empty card: a missing
+            // `remote.session` inject or a rejected RPC both land here.
+            if (live) {
+              setNotice(
+                t('modelWriteFailed', { message: String(error?.message ?? error) }),
+              )
+            }
           }
         }
         read()
         return () => {
           live = false
         }
-      }, [usesRemoteCatalog, providerId, remote])
+      }, [usesRemoteCatalog, providerId, remote, t])
 
       const models = usesRemoteCatalog
         ? catalogModels
@@ -1321,12 +1335,14 @@ html {
        *
        * `configForms` is the Client face of the shared settings write queue, and
        * `remote.settings` is the RPC face that actually persists a switch.
+       * `remote.session` supplies the model catalog the account route lives in.
        *
-       * `remote.settings` is a **sub-namespace dependency**: the context only resolves
-       * `ctx.remote.settings` when that exact key is declared, so listing the parent `remote`
-       * alone throws `cannot get property "remote.settings" without inject` at the first write.
+       * Both `remote.*` entries are **sub-namespace dependencies**: the context only resolves
+       * `ctx.remote.settings` / `ctx.remote.session` when that exact key is declared, so listing
+       * the parent `remote` alone throws `cannot get property "remote.settings" without inject`
+       * at the first call.
        */
-      inject: ['slots', 'locale', 'configForms', 'remote', 'remote.settings'],
+      inject: ['slots', 'locale', 'configForms', 'remote', 'remote.settings', 'remote.session'],
       apply: apply,
     }
   },
