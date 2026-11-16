@@ -908,57 +908,22 @@ function liveRegistry(ctx) {
  * @returns a disposer restoring the original methods.
  */
 function installFilters(registry, state) {
-  const INSTALLED_MODELS = Symbol.for('dsh-settings-resize.listModels')
-  const SHARED_STATE = Symbol.for('dsh-settings-resize.state')
-
-  const previousModels = registry[INSTALLED_MODELS] ?? registry.listModels
-  if (typeof previousModels !== 'function') {
-    return () => {}
-  }
-
-  // One shared holder, so a re-install keeps filtering with the newest state.
-  const shared = registry[SHARED_STATE] ?? state
-  registry[SHARED_STATE] = shared
-
   /*
-   * `listModels` is the only thing filtered. `listProviders` is never wrapped.
+   * Intentionally not a filter any more.
    *
-   * The conversation picker builds its groups from `listModels(provider)` and drops empty ones:
+   * Hiding models here — by making `listModels` report fewer of them — also hides them from
+   * `Settings → Models`, and that page deletes the `deepseek-account` card as soon as the
+   * route lists no models. The picker is therefore filtered in the browser instead, where the
+   * picker has its own catalog store and the Models page does not (see the Client half).
    *
-   *   const groups = catalog.flatMap(...).filter((group) => group.models.length > 0)
-   *
-   * so reporting no models for a provider removes it from every picker, with no need to touch
-   * the provider list that `Settings → Models` renders its cards from.
-   *
-   * All three routes are treated identically, including `deepseek-account`. That route's card
-   * additionally requires a non-empty catalog group to survive, so switching the whole provider
-   * off also removes its card. The footer entry (`全部恢复 / Restore all`) is always on the page
-   * and brings everything back, which is the documented recovery path for exactly this case.
+   * The Host keeps three jobs: store the switches, expose them to the Client, and announce
+   * changes so the picker refetches.
    */
-  const patchedModels = async function listModels(provider) {
-    const models = await previousModels.call(this, provider)
-    const hidden = shared.state
-    if (!Array.isArray(models)) return models
-    // A provider switched off as a whole reports no models. `buildModelCatalog` then drops its
-    // group, which is what hides it from every picker.
-    if (hidden.providers.has(provider)) return []
-    if (hidden.models.size === 0) return models
-    return models.filter((model) => !hidden.models.has(modelKey(provider, model?.id)))
-  }
-
-  registry[INSTALLED_MODELS] = previousModels
-  registry.listModels = patchedModels
-
-  let disposed = false
-  return () => {
-    if (disposed) return
-    disposed = true
-    // Only undo our own wrapper; another plugin may have wrapped on top.
-    if (registry.listModels === patchedModels) registry.listModels = previousModels
-    delete registry[INSTALLED_MODELS]
-    delete registry[SHARED_STATE]
-  }
+  void registry
+  void state
+  return () => {}
 }
+
 export function apply(ctx) {
   // Both are declared dependencies, so the loader guarantees them before this runs. No early
   // return: a silent no-op here is what made the switches store state that never applied.
@@ -1242,6 +1207,79 @@ window.__ModuleLoader__.load({
             .map((entry) => entry.provider + '\u0000' + entry.modelId),
         ),
         providers: new Set(providers.filter((id) => typeof id === 'string')),
+      }
+    }
+
+    /**
+     * Remove switched-off providers and models from one catalog value.
+     *
+     * The catalog is the picker's own snapshot (`{ groups: [{ id, models }] }`). Filtering it
+     * here — rather than on the Host — is what keeps `Settings → Models` complete: that page
+     * reads the Host catalog directly, so every card survives, while the picker never shows a
+     * switched-off entry.
+     *
+     * @param value - the catalog value the directory is about to publish.
+     * @param state - the switch state to apply.
+     * @returns a copy with hidden providers and models removed, and empty groups dropped.
+     */
+    function filterCatalogValue(value, state) {
+      if (value === null || typeof value !== 'object') return value
+      const groups = Array.isArray(value.groups) ? value.groups : []
+      const kept = groups
+        .filter((group) => group !== null && typeof group === 'object' && !state.providers.has(group.id))
+        .map((group) => ({
+          ...group,
+          models: (Array.isArray(group.models) ? group.models : []).filter(
+            (model) => !state.models.has(group.id + '\u0000' + model?.id),
+          ),
+        }))
+        .filter((group) => group.models.length > 0)
+      return { ...value, groups: kept }
+    }
+
+    /**
+     * Wrap the picker's catalog directory so it never publishes a hidden entry.
+     *
+     * Both of the directory's write paths are covered: `set` receives a whole new snapshot, and
+     * `update` receives a mutator that may change the draft in place. Anything else (reads,
+     * subscriptions) passes straight through, and the original methods are restored on dispose.
+     *
+     * @param directory - the ModelCatalogDirectory instance (`ctx.modelDirectories.catalog`).
+     * @param configForms - the client form registry, read for the current switch state.
+     * @returns a disposer restoring both methods.
+     */
+    function installPickerFilter(directory, configForms) {
+      const store = directory?.store
+      if (store === undefined || typeof store.set !== 'function') return () => {}
+
+      const originalSet = store.set
+      const originalUpdate = store.update
+
+      store.set = (patch) => {
+        if (patch === null || typeof patch !== 'object' || !('value' in patch)) {
+          return originalSet.call(store, patch)
+        }
+        return originalSet.call(store, {
+          ...patch,
+          value: filterCatalogValue(patch.value, readSwitchState(configForms)),
+        })
+      }
+
+      if (typeof originalUpdate === 'function') {
+        store.update = (mutator) =>
+          originalUpdate.call(store, (draft) => {
+            const result = mutator(draft)
+            const target = result !== undefined ? result : draft
+            if (target !== null && typeof target === 'object' && 'value' in target) {
+              target.value = filterCatalogValue(target.value, readSwitchState(configForms))
+            }
+            return result
+          })
+      }
+
+      return () => {
+        store.set = originalSet
+        if (typeof originalUpdate === 'function') store.update = originalUpdate
       }
     }
 
@@ -2339,6 +2377,27 @@ html {
       // The settings Remote is what actually persists a switch; without it the block cannot
       // write, so the whole feature is only registered when both faces exist.
       const remote = ctx.remote
+
+      /*
+       * The conversation picker is filtered here, in the browser.
+       *
+       * `Settings → Models` and the picker read different sources: the page calls
+       * `remote.session.modelCatalog()` directly, while the picker publishes into
+       * `ctx.modelDirectories.catalog.store` first. Hiding a model on the Host therefore also
+       * hid it from the page — and that page deletes the `deepseek-account` card the moment the
+       * route lists no models, which is exactly the bug where only that card disappeared.
+       *
+       * Filtering the picker's store touches one surface only: every Settings card keeps its
+       * models, and the picker never sees a switched-off entry.
+       */
+      const pickerDirectory = ctx.modelDirectories?.catalog
+      if (configForms !== undefined && pickerDirectory !== undefined) {
+        ctx.effect(
+          () => installPickerFilter(pickerDirectory, configForms),
+          'dsh-settings-resize: picker catalog filter',
+        )
+      }
+
       if (configForms !== undefined && remote !== undefined) {
         ctx.effect(
           () =>
@@ -2418,7 +2477,7 @@ html {
        * the parent `remote` alone throws `cannot get property "remote.settings" without inject`
        * at the first call.
        */
-      inject: ['slots', 'locale', 'configForms', 'remote', 'remote.settings', 'remote.session'],
+      inject: ['slots', 'locale', 'configForms', 'remote', 'remote.settings', 'remote.session', 'modelDirectories'],
       apply: apply,
     }
   },

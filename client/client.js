@@ -111,6 +111,79 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Remove switched-off providers and models from one catalog value.
+     *
+     * The catalog is the picker's own snapshot (`{ groups: [{ id, models }] }`). Filtering it
+     * here — rather than on the Host — is what keeps `Settings → Models` complete: that page
+     * reads the Host catalog directly, so every card survives, while the picker never shows a
+     * switched-off entry.
+     *
+     * @param value - the catalog value the directory is about to publish.
+     * @param state - the switch state to apply.
+     * @returns a copy with hidden providers and models removed, and empty groups dropped.
+     */
+    function filterCatalogValue(value, state) {
+      if (value === null || typeof value !== 'object') return value
+      const groups = Array.isArray(value.groups) ? value.groups : []
+      const kept = groups
+        .filter((group) => group !== null && typeof group === 'object' && !state.providers.has(group.id))
+        .map((group) => ({
+          ...group,
+          models: (Array.isArray(group.models) ? group.models : []).filter(
+            (model) => !state.models.has(group.id + '\u0000' + model?.id),
+          ),
+        }))
+        .filter((group) => group.models.length > 0)
+      return { ...value, groups: kept }
+    }
+
+    /**
+     * Wrap the picker's catalog directory so it never publishes a hidden entry.
+     *
+     * Both of the directory's write paths are covered: `set` receives a whole new snapshot, and
+     * `update` receives a mutator that may change the draft in place. Anything else (reads,
+     * subscriptions) passes straight through, and the original methods are restored on dispose.
+     *
+     * @param directory - the ModelCatalogDirectory instance (`ctx.modelDirectories.catalog`).
+     * @param configForms - the client form registry, read for the current switch state.
+     * @returns a disposer restoring both methods.
+     */
+    function installPickerFilter(directory, configForms) {
+      const store = directory?.store
+      if (store === undefined || typeof store.set !== 'function') return () => {}
+
+      const originalSet = store.set
+      const originalUpdate = store.update
+
+      store.set = (patch) => {
+        if (patch === null || typeof patch !== 'object' || !('value' in patch)) {
+          return originalSet.call(store, patch)
+        }
+        return originalSet.call(store, {
+          ...patch,
+          value: filterCatalogValue(patch.value, readSwitchState(configForms)),
+        })
+      }
+
+      if (typeof originalUpdate === 'function') {
+        store.update = (mutator) =>
+          originalUpdate.call(store, (draft) => {
+            const result = mutator(draft)
+            const target = result !== undefined ? result : draft
+            if (target !== null && typeof target === 'object' && 'value' in target) {
+              target.value = filterCatalogValue(target.value, readSwitchState(configForms))
+            }
+            return result
+          })
+      }
+
+      return () => {
+        store.set = originalSet
+        if (typeof originalUpdate === 'function') store.update = originalUpdate
+      }
+    }
+
+    /**
      * Persist the switch state.
      *
      * The write goes through the settings Remote the Models page itself uses:
@@ -1204,6 +1277,27 @@ html {
       // The settings Remote is what actually persists a switch; without it the block cannot
       // write, so the whole feature is only registered when both faces exist.
       const remote = ctx.remote
+
+      /*
+       * The conversation picker is filtered here, in the browser.
+       *
+       * `Settings → Models` and the picker read different sources: the page calls
+       * `remote.session.modelCatalog()` directly, while the picker publishes into
+       * `ctx.modelDirectories.catalog.store` first. Hiding a model on the Host therefore also
+       * hid it from the page — and that page deletes the `deepseek-account` card the moment the
+       * route lists no models, which is exactly the bug where only that card disappeared.
+       *
+       * Filtering the picker's store touches one surface only: every Settings card keeps its
+       * models, and the picker never sees a switched-off entry.
+       */
+      const pickerDirectory = ctx.modelDirectories?.catalog
+      if (configForms !== undefined && pickerDirectory !== undefined) {
+        ctx.effect(
+          () => installPickerFilter(pickerDirectory, configForms),
+          'dsh-settings-resize: picker catalog filter',
+        )
+      }
+
       if (configForms !== undefined && remote !== undefined) {
         ctx.effect(
           () =>
@@ -1283,7 +1377,7 @@ html {
        * the parent `remote` alone throws `cannot get property "remote.settings" without inject`
        * at the first call.
        */
-      inject: ['slots', 'locale', 'configForms', 'remote', 'remote.settings', 'remote.session'],
+      inject: ['slots', 'locale', 'configForms', 'remote', 'remote.settings', 'remote.session', 'modelDirectories'],
       apply: apply,
     }
   },

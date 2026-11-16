@@ -40,7 +40,7 @@ check('documents both custom properties of the surface', en.includes('--dsh-sett
 check(
   'documents the hard locale dependency',
   /\['slots', 'locale'\]/.test(en) &&
-    /inject: \['slots', 'locale', 'configForms', 'remote', 'remote\.settings', 'remote\.session'\]/.test(
+    /inject: \[\s*'slots',\s*'locale',\s*'configForms',\s*'remote',\s*'remote\.settings',\s*'remote\.session',\s*'modelDirectories',?\s*\]/.test(
       client,
     ),
 )

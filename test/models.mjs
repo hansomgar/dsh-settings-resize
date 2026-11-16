@@ -137,178 +137,58 @@ check(
 const pickerIds = async (provider) => (await registry.listModels(provider)).map((m) => m.id)
 
 check(
-  'with nothing switched off the picker is unchanged',
+  'the Host leaves listModels untouched so every Settings card keeps its models',
   (await pickerIds('deepseek')).length === 2,
-  String((await pickerIds('deepseek')).length),
+  JSON.stringify(await pickerIds('deepseek')),
 )
 
-// --- switch one model off ---------------------------------------------------------
+// --- the Host stores the switches and announces changes --------------------------
 await service.setModel({ provider: 'deepseek', modelId: 'deepseek-v4-pro', enabled: false })
-
-const afterOff = await pickerIds('deepseek')
-check('the picker drops the switched-off model', !afterOff.includes('deepseek-v4-pro'), JSON.stringify(afterOff))
-check('the other model stays', afterOff.includes('deepseek-flash'))
 check(
-  'the provider catalog itself is untouched',
-  CATALOG.deepseek.length === 2,
-  String(CATALOG.deepseek.length),
-)
-check(
-  'the Settings page source still lists every model',
-  CATALOG.deepseek.map((m) => m.id).includes('deepseek-v4-pro'),
-)
-check(
-  'the switch is stored in the plugin namespace, not the provider config',
-  store['dsh-settings-resize'].disabledModels.length === 1 &&
-    store['llm-deepseek'] === undefined,
+  'a model switch is stored in the plugin namespace',
+  store['dsh-settings-resize'].disabledModels.some(
+    (e) => e.provider === 'deepseek' && e.modelId === 'deepseek-v4-pro',
+  ),
   JSON.stringify(store['dsh-settings-resize'].disabledModels),
 )
-check('a models-updated event is announced', emitted.includes('llm/models-updated'))
-
-// --- switch it back on ------------------------------------------------------------
+check(
+  'the Host still reports that model, so the Models page keeps it',
+  (await pickerIds('deepseek')).includes('deepseek-v4-pro'),
+  JSON.stringify(await pickerIds('deepseek')),
+)
+check(
+  'a models-updated event is announced',
+  emitted.includes('llm/models-updated'),
+  JSON.stringify(emitted),
+)
 await service.setModel({ provider: 'deepseek', modelId: 'deepseek-v4-pro', enabled: true })
 check(
-  'turning it back on restores the picker',
-  (await pickerIds('deepseek')).includes('deepseek-v4-pro'),
+  'turning it back on clears the record',
+  store['dsh-settings-resize'].disabledModels.length === 0,
+  JSON.stringify(store['dsh-settings-resize'].disabledModels),
 )
 
-// --- hiding every model of a provider --------------------------------------------
-await service.setModel({ provider: 'capi', modelId: 'codearts/deepseek-v4.1-flash', enabled: false })
+// --- a provider switch is stored the same way ------------------------------------
+await service.setProvider({ provider: 'capi', enabled: false })
 check(
-  'a fully hidden provider reports no models to the picker',
-  (await pickerIds('capi')).length === 0,
-  String((await pickerIds('capi')).length),
-)
-check(
-  'but its catalog row still exists for the Settings page',
-  CATALOG.capi.length === 1,
-)
-
-// --- provider-level switch, official providers included ---------------------------
-await service.setProvider({ provider: 'deepseek', enabled: false })
-check(
-  'a switched-off provider still stays in the provider list',
-  // Settings → Models renders one card per provider from this list, so removing the entry
-  // would delete the very card whose switch turns it back on.
-  (await registry.listProviders()).some((p) => p.id === 'deepseek'),
-  JSON.stringify((await registry.listProviders()).map((p) => p.id)),
-)
-check(
-  'a switched-off provider reports no models',
-  // buildModelCatalog drops groups with no models, which is what removes it from the pickers.
-  (await pickerIds('deepseek')).length === 0,
-  String((await pickerIds('deepseek')).length),
-)
-check(
-  'the provider setting is stored separately from models',
-  store['dsh-settings-resize'].disabledProviders.includes('deepseek'),
+  'a provider switch is stored for the Client to apply',
+  store['dsh-settings-resize'].disabledProviders.includes('capi'),
   JSON.stringify(store['dsh-settings-resize'].disabledProviders),
 )
+check(
+  'the Host keeps reporting the provider, so its card stays',
+  (await registry.listProviders()).some((p) => p.id === 'capi'),
+  JSON.stringify((await registry.listProviders()).map((p) => p.id)),
+)
+await service.setProvider({ provider: 'capi', enabled: true })
 
-// The account route keeps advertising its models even when the switch names it, because the
-// Models page drops that card as soon as the route lists nothing. Its own per-model switches
-// still work, so emptying it model by model is unaffected.
-// The account route is hidden by expanding the switch into per-model hides. Its Settings card
-// survives because the route still lists models (that availability check is what drops the card
-// otherwise), while every picker sees an empty group and omits the provider.
-// Every provider is treated the same way, the account route included: switching it off records
-// one provider entry and makes `listModels` report nothing, so `buildModelCatalog` drops its
-// group and the provider disappears from every picker. The footer's "Restore all" is the
-// documented way back when that card is no longer rendered.
-await service.setProvider({ provider: 'deepseek-account', enabled: false })
-check(
-  'the account route reports no models, which empties its picker group',
-  (await pickerIds('deepseek-account')).length === 0,
-  String((await pickerIds('deepseek-account')).length),
-)
-check(
-  'the account switch is stored exactly like any other provider',
-  store['dsh-settings-resize'].disabledProviders.includes('deepseek-account') &&
-    !store['dsh-settings-resize'].disabledModels.some((e) => e.provider === 'deepseek-account'),
-  JSON.stringify(store['dsh-settings-resize']),
-)
-await service.setProvider({ provider: 'deepseek-account', enabled: true })
-check(
-  'turning the account route back on restores its models',
-  (await pickerIds('deepseek-account')).length > 0,
-)
-
-await service.setProvider({ provider: 'deepseek', enabled: true })
-check(
-  'turning the provider back on restores its models',
-  (await registry.listProviders()).some((p) => p.id === 'deepseek') &&
-    (await pickerIds('deepseek')).length > 0,
-)
-
-// --- repair of a redundant old list -----------------------------------------------
-// An older build stored both a provider entry and per-model entries for the same route. The
-// provider entry wins, but leaving the per-model entries behind would keep those models hidden
-// after the provider is switched back on. Loading the plugin drops the redundant rows.
-store['dsh-settings-resize'] = {
-  disabledModels: [{ provider: 'deepseek-account', modelId: 'deepseek-flash' }],
-  disabledProviders: ['deepseek-account'],
-}
-const staleRegistry = {
-  async listModels(provider) {
-    return provider === 'deepseek-account'
-      ? [
-          { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash' },
-          { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
-        ]
-      : []
-  },
-  listProviders() {
-    return [{ id: 'deepseek-account', name: 'DeepSeek 账号' }]
-  },
-}
-const staleCtx = {
-  llm: staleRegistry,
-  settings: {
-    describe: () => [
-      {
-        ns: 'dsh-settings-resize',
-        value: JSON.parse(JSON.stringify(store['dsh-settings-resize'])),
-      },
-    ],
-    update: async (ns, patch) => {
-      store[ns] = { ...store[ns], ...patch }
-    },
-  },
-  effect: (fn) => fn(),
-  on: () => () => {},
-  emit: () => {},
-  provide: (n, v) => {
-    staleCtx[n] = v
-    return () => {}
-  },
-}
-host.apply(staleCtx, {})
-// The repair runs asynchronously right after apply.
-await new Promise((resolve) => setTimeout(resolve, 20))
-
-check(
-  'a redundant per-model row is dropped when its provider is already off',
-  store['dsh-settings-resize'].disabledModels.length === 0 &&
-    store['dsh-settings-resize'].disabledProviders.includes('deepseek-account'),
-  JSON.stringify(store['dsh-settings-resize']),
-)
-check(
-  'the switched-off account route reports no models',
-  (await staleRegistry.listModels('deepseek-account')).length === 0,
-)
-
-// --- restore all ------------------------------------------------------------------
-const restored = await service.restoreAll()
-check('restoreAll reports what it restored', restored.restored === 1, String(restored.restored))
-check('restoreAll brings everything back', (await pickerIds('capi')).length === 1)
-check(
-  'the stored list is empty again',
-  store['dsh-settings-resize'].disabledModels.length === 0,
-)
-
-// --- uninstalling the plugin restores the picker ----------------------------------
+// --- restoreAll ------------------------------------------------------------------
 await service.setModel({ provider: 'deepseek', modelId: 'deepseek-flash', enabled: false })
-check('a model is hidden before uninstall', (await pickerIds('deepseek')).length === 1)
+check(
+  'a model switch is recorded before uninstall',
+  store['dsh-settings-resize'].disabledModels.some((e) => e.modelId === 'deepseek-flash'),
+  JSON.stringify(store['dsh-settings-resize'].disabledModels),
+)
 
 // Re-apply so every cleanup can be collected and run, exactly as unload would.
 const cleanups = []
@@ -423,11 +303,27 @@ const clientForms = {
 }
 
 const registrations = []
+// The picker's catalog directory. The plugin wraps this store, which is the only surface the
+// conversation picker reads; `Settings → Models` calls the remote directly, so it is untouched.
+let pickerCatalog = { groups: [] }
+const pickerStore = {
+  set(patch) {
+    if (patch !== null && typeof patch === 'object' && 'value' in patch) pickerCatalog = patch.value
+  },
+  update(mutator) {
+    const result = mutator(pickerCatalog)
+    if (result !== undefined) pickerCatalog = result
+  },
+  getSnapshot: () => ({ value: pickerCatalog, status: 'ready', error: null }),
+  subscribe: () => () => {},
+}
+
 const clientCtx = {
   effect: (fn) => fn(),
   get: () => undefined,
   configForms: clientForms,
   remote: clientRemote,
+  modelDirectories: { catalog: { store: pickerStore } },
   locale: { register: () => () => {}, bind: () => (k) => k },
   slots: {
     inject: (key, cb) => cb(),
@@ -440,6 +336,55 @@ const clientCtx = {
 
 const clientExports = mods[0].factory(() => React)
 clientExports.apply(clientCtx)
+
+// --- the picker catalog is filtered in the browser -------------------------------
+// This is the fix for "only the account card disappears": the Host keeps reporting every model,
+// so the Models page still sees all three cards, while the picker never shows a hidden entry.
+clientStore['dsh-settings-resize'].disabledModels = [{ provider: 'deepseek', modelId: 'deepseek-v4-pro' }]
+clientStore['dsh-settings-resize'].disabledProviders = ['capi']
+pickerStore.set({
+  value: {
+    groups: [
+      { id: 'deepseek', models: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }] },
+      { id: 'capi', models: [{ id: 'capi-flash' }] },
+    ],
+  },
+})
+check(
+  'the picker drops a switched-off model',
+  pickerCatalog.groups.length === 1 &&
+    pickerCatalog.groups[0].models.length === 1 &&
+    pickerCatalog.groups[0].models[0].id === 'deepseek-flash',
+  JSON.stringify(pickerCatalog.groups),
+)
+check(
+  'the picker drops a switched-off provider',
+  !pickerCatalog.groups.some((g) => g.id === 'capi'),
+  JSON.stringify(pickerCatalog.groups.map((g) => g.id)),
+)
+
+// The account route is the case that used to break: hiding its last model must empty the picker
+// without emptying the Host catalog, because the Settings card depends on that catalog.
+clientStore['dsh-settings-resize'].disabledModels = [
+  { provider: 'deepseek-account', modelId: 'deepseek-flash' },
+]
+clientStore['dsh-settings-resize'].disabledProviders = []
+pickerStore.set({
+  value: { groups: [{ id: 'deepseek-account', models: [{ id: 'deepseek-flash' }] }] },
+})
+check(
+  'the picker drops the account route\u2019s last model',
+  pickerCatalog.groups.length === 0,
+  JSON.stringify(pickerCatalog.groups),
+)
+check(
+  'the Host catalog still lists it, so the Settings card survives',
+  (await pickerIds('deepseek-account')).length === 1,
+  JSON.stringify(await pickerIds('deepseek-account')),
+)
+clientStore['dsh-settings-resize'].disabledModels = []
+clientStore['dsh-settings-resize'].disabledProviders = []
+pickerCatalog = { groups: [] }
 
 const cardRegs = registrations.filter((r) => r.options.name === 'settings.models.provider-card')
 check('registers switches on the provider-card slot', cardRegs.length > 0, String(cardRegs.length))
