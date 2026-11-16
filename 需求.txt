@@ -824,6 +824,17 @@ const MODELS_UPDATED = 'llm/models-updated'
 const SETTINGS_UPDATED = 'settings/document-updated'
 
 /**
+ * The OAuth-backed account route.
+ *
+ * Its Settings card has an extra guard the other routes do not: the row is dropped unless
+ * `buildModelCatalog` produced a non-empty group for it, and that catalog is built from
+ * `listProviders` + `listModels`. Emptying either one therefore deletes the card, which is why
+ * a provider-level switch on this route is expanded into per-model hides instead of filtering
+ * at the registry.
+ */
+const ACCOUNT_PROVIDER = 'deepseek-account'
+
+/**
  * Stable key for one model route.
  *
  * @param provider - provider route id.
@@ -896,6 +907,26 @@ function liveRegistry(ctx) {
 }
 
 /**
+ * Read one route's models straight from the registry, bypassing the picker filter.
+ *
+ * The account-route provider switch needs the unfiltered list so it can expand into exact model
+ * keys; asking the wrapped `listModels` would return whatever is already filtered out.
+ *
+ * @param registry - the live LLM registry.
+ * @param provider - provider route id.
+ * @returns the adapter's own list, or an empty array when it cannot be read.
+ */
+async function previousModelsFor(registry, provider) {
+  const original = registry[Symbol.for('dsh-settings-resize.listModels')] ?? registry.listModels
+  try {
+    const models = await original.call(registry, provider)
+    return Array.isArray(models) ? models : []
+  } catch {
+    return []
+  }
+}
+
+/**
  * Install both filters.
  *
  * Re-applying (an HMR reload, or a second generation before the first is disposed) must not
@@ -923,69 +954,59 @@ function installFilters(registry, state) {
   registry[SHARED_STATE] = shared
 
   /*
-   * Two different hiding mechanisms, because the two surfaces read different things.
+   * Only `listModels` is wrapped. `listProviders` stays untouched.
    *
-   * **Ordinary providers — wrap `listModels` only.** The conversation picker builds its groups
-   * from `listModels(provider)` and drops empty ones (`buildModelCatalog` ends with
-   * `.filter((group) => group.models.length > 0)`), so reporting no models removes the provider
-   * from every picker. `listProviders` is left alone because `Settings → Models` renders one
-   * card per entry in it.
+   * The conversation picker builds its groups from `listModels(provider)` and drops empty ones
+   * (`buildModelCatalog` ends with `.filter((group) => group.models.length > 0)`), so reporting
+   * no models removes a provider from every picker. `Settings → Models` instead renders one card
+   * per entry in `listProviders`, so wrapping that list would delete the cards themselves.
    *
-   * **The account route — wrap `listProviders` instead.** Its card survives only while the route
-   * still advertises a model:
+   * ## The account route
+   *
+   * Its card has an extra guard:
    *
    *   s.rows = rows.filter((row) =>
    *     row.entry.provider !== 'deepseek-account' || row.accountAvailable === true)
    *
-   * where `accountAvailable` is "its catalog group has at least one model". Emptying
-   * `listModels` would therefore delete the card, so this route keeps its models and is hidden
-   * by dropping it from `listProviders` — the row stays (its `active` flag simply turns false)
-   * while every picker loses the provider.
+   * and `accountAvailable` is "`buildModelCatalog` produced a non-empty group for this route" —
+   * which itself starts from `listProviders`. Both emptying `listModels` and wrapping
+   * `listProviders` therefore make the card disappear, on the first render or on the next
+   * reload.
+   *
+   * So the provider-level switch on this route does not filter anything at the registry level.
+   * It is expanded by the caller into "hide every model of this provider", which the ordinary
+   * per-model filter already handles: the group empties, every picker loses it, and
+   * `accountAvailable` stays true because the route still lists models.
    */
-  const ACCOUNT_PROVIDER = 'deepseek-account'
-
   const patchedModels = async function listModels(provider) {
     const models = await previousModels.call(this, provider)
     const hidden = shared.state
-    // The account route is hidden through listProviders; emptying its models would drop its card.
-    if (provider === ACCOUNT_PROVIDER) {
-      if (!Array.isArray(models) || hidden.models.size === 0) return models
-      return models.filter((model) => !hidden.models.has(modelKey(provider, model?.id)))
-    }
-    if (hidden.providers.has(provider)) return []
-    if (!Array.isArray(models) || hidden.models.size === 0) return models
+    if (!Array.isArray(models)) return models
+
+    /*
+     * `hidden.providers` names providers switched off as a whole. For every route but the
+     * account one that means "report nothing". The account route cannot be emptied without
+     * losing its card, so there the state carries the expanded model list instead (see
+     * `setProvider`), and this branch simply applies the per-model filter below.
+     */
+    if (provider !== ACCOUNT_PROVIDER && hidden.providers.has(provider)) return []
+    if (hidden.models.size === 0) return models
     return models.filter((model) => !hidden.models.has(modelKey(provider, model?.id)))
   }
 
-  const patchedProviders = function listProviders() {
-    const providers = previousProviders.call(this)
-    const hidden = shared.state
-    if (!Array.isArray(providers)) return providers
-    // Only the account route is dropped here; every other provider keeps its Settings card and
-    // is hidden through listModels instead.
-    return providers.filter(
-      (provider) => provider?.id !== ACCOUNT_PROVIDER || !hidden.providers.has(ACCOUNT_PROVIDER),
-    )
-  }
-
   registry[INSTALLED_MODELS] = previousModels
-  registry[INSTALLED_PROVIDERS] = previousProviders
   registry.listModels = patchedModels
-  registry.listProviders = patchedProviders
 
   let disposed = false
   return () => {
     if (disposed) return
     disposed = true
-    // Only undo our own wrappers; another plugin may have wrapped on top.
+    // Only undo our own wrapper; another plugin may have wrapped on top.
     if (registry.listModels === patchedModels) registry.listModels = previousModels
-    if (registry.listProviders === patchedProviders) registry.listProviders = previousProviders
     delete registry[INSTALLED_MODELS]
-    delete registry[INSTALLED_PROVIDERS]
     delete registry[SHARED_STATE]
   }
 }
-
 export function apply(ctx) {
   // Both are declared dependencies, so the loader guarantees them before this runs. No early
   // return: a silent no-op here is what made the switches store state that never applied.
@@ -1061,9 +1082,38 @@ export function apply(ctx) {
             return { ok: false, reason: 'invalid' }
           }
           const providers = new Set(holder.state.providers)
+          const models = new Set(holder.state.models)
+
+          if (provider === ACCOUNT_PROVIDER) {
+            /*
+             * This route cannot be filtered at the registry: both `listModels` and
+             * `listProviders` feed the availability check that keeps its Settings card, so
+             * either one emptying makes the card vanish on the next load.
+             *
+             * Instead the switch is expanded here into per-model hides. The route keeps
+             * advertising models (so the card stays), while the catalog group becomes empty
+             * and every picker drops it.
+             */
+            const listed = await previousModelsFor(registry, provider)
+            if (request.enabled === false) {
+              for (const model of listed) {
+                if (typeof model?.id === 'string') models.add(modelKey(provider, model.id))
+              }
+            } else {
+              for (const model of listed) {
+                if (typeof model?.id === 'string') models.delete(modelKey(provider, model.id))
+              }
+            }
+            providers.delete(provider)
+            holder.state = { models, providers }
+            await writeState(settings, holder.state)
+            publish()
+            return { ok: true }
+          }
+
           if (request.enabled === false) providers.add(provider)
           else providers.delete(provider)
-          holder.state = { models: holder.state.models, providers }
+          holder.state = { models, providers }
           await writeState(settings, holder.state)
           publish()
           return { ok: true }

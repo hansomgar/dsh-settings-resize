@@ -208,23 +208,30 @@ check(
 // The account route keeps advertising its models even when the switch names it, because the
 // Models page drops that card as soon as the route lists nothing. Its own per-model switches
 // still work, so emptying it model by model is unaffected.
-// The account route is hidden through `listProviders`, not by emptying its models: the Models
-// page drops that card as soon as its catalog group is empty, so its models must stay listed.
+// The account route is hidden by expanding the switch into per-model hides. Its Settings card
+// survives because the route still lists models (that availability check is what drops the card
+// otherwise), while every picker sees an empty group and omits the provider.
 await service.setProvider({ provider: 'deepseek-account', enabled: false })
 check(
-  'the account route leaves the picker provider list',
-  !(await registry.listProviders()).some((p) => p.id === 'deepseek-account'),
+  'the account route stays in the provider list so its card survives',
+  (await registry.listProviders()).some((p) => p.id === 'deepseek-account'),
   JSON.stringify((await registry.listProviders()).map((p) => p.id)),
 )
 check(
-  'the account route keeps its models so its Settings card survives',
-  (await pickerIds('deepseek-account')).length > 0,
+  'the account route reports no models, which empties its picker group',
+  (await pickerIds('deepseek-account')).length === 0,
   String((await pickerIds('deepseek-account')).length),
+)
+check(
+  'the expansion is stored as per-model hides, not a provider entry',
+  !store['dsh-settings-resize'].disabledProviders.includes('deepseek-account') &&
+    store['dsh-settings-resize'].disabledModels.some((e) => e.provider === 'deepseek-account'),
+  JSON.stringify(store['dsh-settings-resize']),
 )
 await service.setProvider({ provider: 'deepseek-account', enabled: true })
 check(
-  'turning the account route back on restores it',
-  (await registry.listProviders()).some((p) => p.id === 'deepseek-account'),
+  'turning the account route back on restores its models',
+  (await pickerIds('deepseek-account')).length > 0,
 )
 
 await service.setProvider({ provider: 'deepseek', enabled: true })
