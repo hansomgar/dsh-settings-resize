@@ -265,7 +265,17 @@ window.__ModuleLoader__.load({
        */
       if (providerId === undefined) return null
 
-      const providerOff = state.providers.has(providerId)
+      /*
+       * The account route cannot be switched off as a whole.
+       *
+       * The Models page keeps its card only while that route still advertises a model, and the
+       * card's availability is derived from the same catalog the picker reads. Emptying the
+       * catalog would therefore delete the card itself, so this route offers per-model switches
+       * only — switching off every model still removes the group from every picker.
+       */
+      const providerSwitchable = providerId !== 'deepseek-account'
+
+      const providerOff = providerSwitchable && state.providers.has(providerId)
       const offCount = models.filter((model) => state.models.has(providerId + '\u0000' + model.id)).length
 
       /*
@@ -291,35 +301,36 @@ window.__ModuleLoader__.load({
           : h('div', { className: 'dsh-settings-resize-notice', role: 'status' }, notice),
 
         // The provider switch, right-aligned on its own line against the card controls above.
-        h(
-          'div',
-          { className: 'dsh-settings-resize-provider-row' },
-          h(
-            'span',
-            { className: 'dsh-settings-resize-provider-caption' },
-            providerOff
-              ? t('providerRowNoteOff')
-              : t('providerRowNoteOn'),
-          ),
-          h(PillSwitch, {
-            on: !providerOff,
-            label: t('providerSwitchAria', {
-              name: providedName ?? providerId,
-              action: providerOff ? t('modelEnable') : t('modelDisable'),
-            }),
-            disabled: busy !== '',
-            onChange: () =>
-              commit(
-                (current) => {
-                  const providers = new Set(current.providers)
-                  if (providerOff) providers.delete(providerId)
-                  else providers.add(providerId)
-                  return { models: current.models, providers }
-                },
-                'provider',
+        // The account route has no provider-level switch; see `providerSwitchable`.
+        providerSwitchable
+          ? h(
+              'div',
+              { className: 'dsh-settings-resize-provider-row' },
+              h(
+                'span',
+                { className: 'dsh-settings-resize-provider-caption' },
+                providerOff ? t('providerRowNoteOff') : t('providerRowNoteOn'),
               ),
-          }),
-        ),
+              h(PillSwitch, {
+                on: !providerOff,
+                label: t('providerSwitchAria', {
+                  name: providedName ?? providerId,
+                  action: providerOff ? t('modelEnable') : t('modelDisable'),
+                }),
+                disabled: busy !== '',
+                onChange: () =>
+                  commit(
+                    (current) => {
+                      const providers = new Set(current.providers)
+                      if (providerOff) providers.delete(providerId)
+                      else providers.add(providerId)
+                      return { models: current.models, providers }
+                    },
+                    'provider',
+                  ),
+              }),
+            )
+          : null,
 
         // Model rows. A provider with no readable catalog shows none; one that is switched off
         // shows the rows without switches.

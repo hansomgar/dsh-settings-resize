@@ -43,6 +43,8 @@ const CATALOG = {
     { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
   ],
   capi: [{ id: 'codearts/deepseek-v4.1-flash', name: 'deepseek-v4.1-flash' }],
+  // The account route: its Settings card survives only while it still advertises a model.
+  'deepseek-account': [{ id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash' }],
 }
 
 // A stand-in for the live LLM registry the picker reads.
@@ -204,6 +206,18 @@ check(
   store['dsh-settings-resize'].disabledProviders.includes('deepseek'),
   JSON.stringify(store['dsh-settings-resize'].disabledProviders),
 )
+
+// The account route keeps advertising its models even when the switch names it, because the
+// Models page drops that card as soon as the route lists nothing. Its own per-model switches
+// still work, so emptying it model by model is unaffected.
+await service.setProvider({ provider: 'deepseek-account', enabled: false })
+check(
+  'the account route keeps its models so its Settings card survives',
+  (await pickerIds('deepseek-account')).length > 0,
+  String((await pickerIds('deepseek-account')).length),
+)
+await service.setProvider({ provider: 'deepseek-account', enabled: true })
+
 await service.setProvider({ provider: 'deepseek', enabled: true })
 check(
   'turning the provider back on restores its models',
@@ -418,10 +432,12 @@ const accountTree = accountReg.component({
   t,
   ...accountReg.options.inject(),
 })
+// The account route must NOT offer a provider-level switch: the Models page keeps that card
+// only while the route still advertises a model, so emptying its catalog would delete the card.
 check(
-  'a provider without a readable catalog still renders the provider switch',
-  accountTree !== null && findSwitch(accountTree, '整个提供商') !== undefined,
-  accountTree === null ? 'rendered null' : 'no switch found',
+  'the account route offers no provider-level switch',
+  accountTree !== null && findSwitch(accountTree, '整个提供商') === undefined,
+  accountTree === null ? 'rendered null' : 'provider switch present',
 )
 
 // --- toggling writes the plugin list, not the provider catalog ---------------------
