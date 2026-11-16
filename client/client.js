@@ -337,112 +337,29 @@ window.__ModuleLoader__.load({
       if (providerId === undefined) return null
 
       /*
-       * The account route has no provider-level switch.
+       * One switch per model, and nothing else.
        *
-       * `Settings → Models` drops that card as soon as its catalog group is empty, and the
-       * conversation picker drops the group for the same reason — one condition, two effects.
-       * A provider switch would therefore delete the card it lives on. Instead the card offers a
-       * bulk model action: switching every model off empties the group, which removes the whole
-       * provider from every picker while the card stays.
+       * Everything this card does is expressed through the model switches: a model that is off
+       * is left out of the conversation picker while staying listed here. Switching every model
+       * off empties the provider's catalog group, which is what removes the provider itself from
+       * every picker — no separate provider control is needed.
        */
-      const providerSwitchable = providerId !== ACCOUNT_PROVIDER
-      const allModelsOff =
-        models.length > 0 &&
-        models.every((model) => state.models.has(providerId + '\u0000' + model.id))
-
-      const providerOff = state.providers.has(providerId)
       const offCount = models.filter((model) => state.models.has(providerId + '\u0000' + model.id)).length
 
       /*
        * Layout follows the approved design:
        *
-       *   [ card header: name · status · Edit · Delete        (provider switch) ]
-       *   [ label: 对话中可见的模型 ]
-       *   [ model name / note                                 (model switch)    ]
+       *   [ label: 在对话中显示 ]
+       *   [ model name / note                    (model switch) ]
        *
-       * The provider switch is the last control on the card's control line, so it lines up with
-       * Edit and Delete. The slot itself renders below the header row, which is why this block
-       * starts flush against it and repeats the alignment rather than sitting inside it.
-       *
-       * A provider that is switched off hides its model switches entirely: the rows stay (so the
-       * configuration is still readable) but they carry no switch and say they follow the
-       * provider.
+       * The slot renders below the card header, so this block starts flush against it.
        */
       return h(
         'div',
-        { className: 'dsh-settings-resize-rowgroup', 'data-provider-off': providerOff ? 'true' : undefined },
+        { className: 'dsh-settings-resize-rowgroup' },
         notice === ''
           ? null
           : h('div', { className: 'dsh-settings-resize-notice', role: 'status' }, notice),
-
-        /*
-         * Provider controls.
-         *
-         * Ordinary routes get one switch that hides the provider as a whole. The account route
-         * gets a bulk action over its own models instead, because the provider switch cannot be
-         * offered there without deleting the card (see `providerSwitchable`).
-         */
-        providerSwitchable
-          ? h(
-              'div',
-              { className: 'dsh-settings-resize-provider-row' },
-              h(
-                'span',
-                { className: 'dsh-settings-resize-provider-caption' },
-                providerOff ? t('providerRowNoteOff') : t('providerRowNoteOn'),
-              ),
-              h(PillSwitch, {
-                on: !providerOff,
-                label: t('providerSwitchAria', {
-                  name: providedName ?? providerId,
-                  action: providerOff ? t('modelEnable') : t('modelDisable'),
-                }),
-                disabled: busy !== '',
-                onChange: () =>
-                  commit(
-                    (current) => {
-                      const providers = new Set(current.providers)
-                      if (providerOff) providers.delete(providerId)
-                      else providers.add(providerId)
-                      return { models: current.models, providers }
-                    },
-                    'provider',
-                  ),
-              }),
-            )
-          : h(
-              'div',
-              { className: 'dsh-settings-resize-provider-row' },
-              h(
-                'span',
-                { className: 'dsh-settings-resize-provider-caption' },
-                allModelsOff ? t('providerRowNoteOff') : t('providerRowNoteOn'),
-              ),
-              h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'dsh-settings-resize-bulk',
-                  disabled: busy !== '' || models.length === 0,
-                  onClick: () =>
-                    commit(
-                      (current) => {
-                        // `models` above is this card's catalog; the set below is the stored list
-                        // of hidden keys, so the two need distinct names.
-                        const next = new Set(current.models)
-                        for (const model of models) {
-                          const key = providerId + '\u0000' + model.id
-                          if (allModelsOff) next.delete(key)
-                          else next.add(key)
-                        }
-                        return { models: next, providers: current.providers }
-                      },
-                      'bulk',
-                    ),
-                },
-                allModelsOff ? t('modelEnableAll') : t('modelDisableAll'),
-              ),
-            ),
 
         // Model rows. A provider with no readable catalog shows none; one that is switched off
         // shows the rows without switches.
@@ -452,7 +369,7 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'dsh-settings-resize-rowgroup-label' },
               t('modelSwitchTitle'),
-              offCount === 0 || providerOff
+              offCount === 0
                 ? null
                 : h(
                     'span',
@@ -469,7 +386,7 @@ window.__ModuleLoader__.load({
             {
               key,
               className: 'dsh-settings-resize-model-row',
-              'data-disabled': off || providerOff ? 'true' : undefined,
+              'data-disabled': off ? 'true' : undefined,
             },
             h(
               'div',
@@ -478,18 +395,11 @@ window.__ModuleLoader__.load({
               h(
                 'span',
                 { className: 'dsh-settings-resize-model-note' },
-                providerOff
-                  ? t('modelRowNoteFollowsProvider')
-                  : off
-                    ? t('modelRowNoteOff')
-                    : t('modelRowNoteOn'),
+                off ? t('modelRowNoteOff') : t('modelRowNoteOn'),
               ),
             ),
-            // No switch while the provider is off: the whole provider is already hidden.
-            providerOff
-              ? null
-              : h(PillSwitch, {
-                  on: !off,
+            h(PillSwitch, {
+              on: !off,
                   label: (off ? t('modelEnable') : t('modelDisable')) + ' ' + model.name,
                   disabled: busy !== '',
                   onChange: () =>
@@ -584,17 +494,10 @@ window.__ModuleLoader__.load({
       modelSwitchTitle: '在对话中显示',
       modelSwitchHint: '关闭后不再出现在对话的模型选择器中，此处仍可随时打开。',
       modelSwitchHintOff: '已关闭 {count} 个模型',
-      providerSwitchLabel: '{name}（整个提供商）',
-      providerSwitchAria: '{action} {name}（整个提供商）',
-      providerRowNoteOn: '该提供商的模型会出现在模型选择器中',
-      providerRowNoteOff: '整个提供商已从模型选择器中隐藏',
       modelRowNoteOn: '会出现在模型选择器中',
       modelRowNoteOff: '已从模型选择器中隐藏',
-      modelRowNoteFollowsProvider: '随提供商一起隐藏',
       modelEnable: '启用',
       modelDisable: '关闭',
-      modelEnableAll: '全部启用',
-      modelDisableAll: '全部关闭',
       modelRestoreAll: '全部恢复（{count}）',
       modelWriteFailed: '写入失败：{message}',
     }
@@ -619,17 +522,10 @@ window.__ModuleLoader__.load({
       modelSwitchHint:
         'When off, it is left out of the conversation model picker. It stays listed here and can be turned back on at any time.',
       modelSwitchHintOff: '{count} model(s) off',
-      providerSwitchLabel: '{name} (whole provider)',
-      providerSwitchAria: '{action} {name} (whole provider)',
-      providerRowNoteOn: "This provider's models are offered in the model picker",
-      providerRowNoteOff: 'The whole provider is hidden from the model picker',
       modelRowNoteOn: 'Offered in the model picker',
       modelRowNoteOff: 'Hidden from the model picker',
-      modelRowNoteFollowsProvider: 'Hidden with the provider',
       modelEnable: 'On',
       modelDisable: 'Off',
-      modelEnableAll: 'Turn all on',
-      modelDisableAll: 'Turn all off',
       modelRestoreAll: 'Restore all ({count})',
       modelWriteFailed: 'Write failed: {message}',
     }
@@ -785,25 +681,6 @@ html {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.dsh-settings-resize-bulk {
-  flex: none;
-  height: 28px;
-  padding: 0 12px;
-  border: .5px solid var(--dsw-alias-border-l4);
-  border-radius: var(--dsw-radius-md);
-  background: transparent;
-  font: inherit;
-  font-size: 12px;
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-}
-.dsh-settings-resize-bulk:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-.dsh-settings-resize-bulk:disabled {
-  opacity: .45;
-  cursor: default;
 }
 .dsh-settings-resize-rowgroup-label {
   margin-top: 6px;

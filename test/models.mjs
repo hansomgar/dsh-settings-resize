@@ -528,7 +528,7 @@ function findSwitch(node, modelName) {
 const text = collect(tree)
 check('the card shows every model', text.includes('DeepSeek-V4.1-Flash') && text.includes('DeepSeek-V4-Pro'))
 check('every model has a switch', findSwitch(tree, 'DeepSeek-V4-Pro') !== undefined)
-check('the card offers a provider-level switch', findSwitch(tree, '（整个提供商）') !== undefined)
+check('the card offers no provider-level switch', findSwitch(tree, '（整个提供商）') === undefined)
 
 // A provider card whose catalog is not readable here (the OAuth route keeps it remotely) must
 // still offer the provider-level switch — that was the bug in the first card.
@@ -564,9 +564,11 @@ check(
   accountTree === null ? 'rendered null' : 'provider switch present',
 )
 check(
-  'the account route offers a bulk model action instead',
-  accountTree !== null && collect(accountTree).some((text) => text === '全部关闭' || text === '全部启用'),
-  accountTree === null ? 'rendered null' : collect(accountTree).join('|').slice(0, 120),
+  'the account route lists only model switches',
+  accountTree !== null &&
+    findSwitch(accountTree, '整个提供商') === undefined &&
+    findSwitch(accountTree, 'DeepSeek-V4.1-Flash') !== undefined,
+  accountTree === null ? 'rendered null' : 'unexpected control',
 )
 
 // Its models come from the remote listing, not the settings document, so the card still shows
@@ -626,36 +628,18 @@ check(
   JSON.stringify(clientStore['dsh-settings-resize'].disabledModels),
 )
 
-// --- provider off removes the model switches entirely ------------------------------
-// The approved rule: once the whole provider is off, no model row carries a switch, and the
-// rows say they follow the provider.
+// --- a provider entry no longer controls the UI -------------------------------
+// Providers are hidden by switching their models off, so a leftover provider entry must not
+// change what the card renders.
 clientStore['dsh-settings-resize'].disabledProviders = ['llm-deepseek']
 const tree3 = deepseekReg.component({
   provider: { provider: 'llm-deepseek', settingsNs: 'llm-deepseek', displayName: 'DeepSeek' },
   t,
   ...props,
 })
-const switchesWhenOff = (function count(node) {
-  if (node === null || typeof node !== 'object') return 0
-  let total = 0
-  if (typeof node.type === 'function') total += count(node.type(node.props ?? {}))
-  const p = node.props ?? {}
-  if (p.role === 'switch') total += 1
-  for (const child of node.children ?? []) total += count(child)
-  return total
-})(tree3)
 check(
-  'a switched-off provider renders only its own switch, no model switches',
-  switchesWhenOff === 1,
-  String(switchesWhenOff),
-)
-check(
-  'model rows say they follow the provider',
-  collect(tree3).includes('随提供商一起隐藏'),
-)
-check(
-  'the provider caption states it is hidden',
-  collect(tree3).includes('整个提供商已从模型选择器中隐藏'),
+  'a provider entry does not remove the model switches',
+  findSwitch(tree3, 'DeepSeek-V4-Pro') !== undefined,
 )
 clientStore['dsh-settings-resize'].disabledProviders = []
 
