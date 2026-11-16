@@ -281,12 +281,23 @@ sandbox.window = sandbox
 vm.createContext(sandbox)
 vm.runInContext(clientSource, sandbox)
 
+const effectDisposers = []
 const React = {
   createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat() }),
-  useState: (init) => [typeof init === 'function' ? init() : init, () => {}],
+  // A mutable cell: state setters write through, so an effect that resolves asynchronously is
+  // observable by reading the component again after the microtask queue drains.
+  useState: (init) => {
+    const cell = { value: typeof init === 'function' ? init() : init }
+    return [cell.value, (next) => { cell.value = next }]
+  },
   useCallback: (fn) => fn,
   useRef: (v) => ({ current: v }),
-  useEffect: () => {},
+  // Effects run immediately so the account card's remote catalog fetch resolves before the
+  // static tree is inspected.
+  useEffect: (fn) => {
+    const dispose = fn()
+    if (typeof dispose === 'function') effectDisposers.push(dispose)
+  },
 }
 
 const clientStore = {
@@ -305,6 +316,21 @@ const clientRemote = {
       }
       return { ok: true, value: { ns } }
     },
+  },
+  // The account route has no catalog in the settings document; the card reads this instead.
+  session: {
+    modelCatalog: async () => ({
+      ok: true,
+      value: {
+        groups: [
+          {
+            id: 'deepseek-account',
+            name: 'DeepSeek 账号',
+            models: [{ id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash' }],
+          },
+        ],
+      },
+    }),
   },
 }
 const clientForms = {
@@ -423,6 +449,19 @@ check('the card offers a provider-level switch', findSwitch(tree, '（整个提�
 // A provider card whose catalog is not readable here (the OAuth route keeps it remotely) must
 // still offer the provider-level switch — that was the bug in the first card.
 const accountReg = cardRegs.find((r) => r.options.key === 'llm-deepseek-account')
+const accountProps = accountReg.options.inject()
+// The account card fills its model list from the remote listing in an effect, so render once
+// to let that effect start, drain the microtask queue, then render again with the data in hand.
+accountReg.component({
+  provider: {
+    provider: 'deepseek-account',
+    settingsNs: 'llm-deepseek-account',
+    displayName: 'DeepSeek 账号',
+  },
+  t,
+  ...accountProps,
+})
+await new Promise((resolve) => setImmediate(resolve))
 const accountTree = accountReg.component({
   provider: {
     provider: 'deepseek-account',
@@ -430,7 +469,7 @@ const accountTree = accountReg.component({
     displayName: 'DeepSeek 账号',
   },
   t,
-  ...accountReg.options.inject(),
+  ...accountProps,
 })
 // The account route must NOT offer a provider-level switch: the Models page keeps that card
 // only while the route still advertises a model, so emptying its catalog would delete the card.
@@ -440,6 +479,17 @@ check(
   accountTree === null ? 'rendered null' : 'provider switch present',
 )
 
+// Its models come from the remote listing, not the settings document, so the card still shows
+// one switch per model — the section would otherwise render nothing at all.
+check(
+  'the account route lists its models from the remote catalog',
+  collect(accountTree).includes('DeepSeek-V4.1-Flash'),
+  collect(accountTree).join(' | ').slice(0, 120),
+)
+check(
+  'the account route offers a switch per model',
+  findSwitch(accountTree, 'DeepSeek-V4.1-Flash') !== undefined,
+)
 // --- toggling writes the plugin list, not the provider catalog ---------------------
 await findSwitch(tree, 'DeepSeek-V4-Pro').onClick()
 check(

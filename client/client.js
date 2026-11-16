@@ -71,6 +71,25 @@ window.__ModuleLoader__.load({
     const RECORD_NS = 'dsh-settings-resize'
 
     /**
+     * The OAuth-backed account route.
+     *
+     * It differs from every other provider in two ways that shape this UI: its catalog lives
+     * only in the remote listing (never in the settings document), and the Models page drops its
+     * card as soon as that listing is empty. So it reads models remotely and offers no
+     * provider-level switch — emptying it would delete the card itself.
+     */
+    const ACCOUNT_PROVIDER = 'deepseek-account'
+
+    /**
+     * Model lists fetched from the remote catalog, keyed by provider.
+     *
+     * The account route has no settings-document catalog, so its list arrives asynchronously.
+     * Caching it means a later render (or a remount after switching pages) shows the list
+     * immediately instead of briefly rendering an empty section.
+     */
+    const remoteCatalogCache = new Map()
+
+    /**
      * Read the switch state from the plugin's own settings namespace.
      *
      * @param configForms - the client form registry.
@@ -235,8 +254,46 @@ window.__ModuleLoader__.load({
         }
       }, [configForms, refresh])
 
-      const models = settingsNs === undefined ? [] : modelsOfProvider(configForms, settingsNs, providerId)
+      /*
+       * The account route keeps no catalog in the settings document: its models come from the
+       * remote listing, which is the same source the page itself uses to decide whether the
+       * card is available. Reading it here is what lets the card show switches at all.
+       *
+       * The reply is cached per provider for the lifetime of the page, so a re-render keeps
+       * showing the list while a refresh is in flight and the section never flashes empty.
+       */
+      const usesRemoteCatalog = providerId === ACCOUNT_PROVIDER
+      const [catalogModels, setCatalogModels] = useState(
+        () => remoteCatalogCache.get(providerId) ?? [],
+      )
+      useEffect(() => {
+        if (!usesRemoteCatalog) return () => {}
+        let live = true
+        const read = async () => {
+          try {
+            const response = await remote.session.modelCatalog()
+            if (!live || response?.ok !== true) return
+            const group = (response.value?.groups ?? []).find((entry) => entry.id === providerId)
+            const rows = (group?.models ?? [])
+              .filter((model) => typeof model?.id === 'string')
+              .map((model) => ({ id: model.id, name: model.name ?? model.id }))
+            remoteCatalogCache.set(providerId, rows)
+            setCatalogModels(rows)
+          } catch {
+            // A failed listing simply leaves the section empty.
+          }
+        }
+        read()
+        return () => {
+          live = false
+        }
+      }, [usesRemoteCatalog, providerId, remote])
 
+      const models = usesRemoteCatalog
+        ? catalogModels
+        : settingsNs === undefined
+          ? []
+          : modelsOfProvider(configForms, settingsNs, providerId)
       const commit = useCallback(
         async (mutate, key) => {
           if (busy !== '') return
