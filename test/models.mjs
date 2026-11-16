@@ -211,21 +211,20 @@ check(
 // The account route is hidden by expanding the switch into per-model hides. Its Settings card
 // survives because the route still lists models (that availability check is what drops the card
 // otherwise), while every picker sees an empty group and omits the provider.
+// Every provider is treated the same way, the account route included: switching it off records
+// one provider entry and makes `listModels` report nothing, so `buildModelCatalog` drops its
+// group and the provider disappears from every picker. The footer's "Restore all" is the
+// documented way back when that card is no longer rendered.
 await service.setProvider({ provider: 'deepseek-account', enabled: false })
-check(
-  'the account route stays in the provider list so its card survives',
-  (await registry.listProviders()).some((p) => p.id === 'deepseek-account'),
-  JSON.stringify((await registry.listProviders()).map((p) => p.id)),
-)
 check(
   'the account route reports no models, which empties its picker group',
   (await pickerIds('deepseek-account')).length === 0,
   String((await pickerIds('deepseek-account')).length),
 )
 check(
-  'the expansion is stored as per-model hides, not a provider entry',
-  !store['dsh-settings-resize'].disabledProviders.includes('deepseek-account') &&
-    store['dsh-settings-resize'].disabledModels.some((e) => e.provider === 'deepseek-account'),
+  'the account switch is stored exactly like any other provider',
+  store['dsh-settings-resize'].disabledProviders.includes('deepseek-account') &&
+    !store['dsh-settings-resize'].disabledModels.some((e) => e.provider === 'deepseek-account'),
   JSON.stringify(store['dsh-settings-resize']),
 )
 await service.setProvider({ provider: 'deepseek-account', enabled: true })
@@ -241,10 +240,10 @@ check(
     (await pickerIds('deepseek')).length > 0,
 )
 
-// --- migrating a list written by an older build -----------------------------------
-// Those builds recorded the account route in `disabledProviders`. That entry no longer hides
-// anything on that route, so the switch would read as off while its models kept reaching the
-// pickers. Loading the plugin rewrites it into the per-model hides it was meant to represent.
+// --- repair of a redundant old list -----------------------------------------------
+// An older build stored both a provider entry and per-model entries for the same route. The
+// provider entry wins, but leaving the per-model entries behind would keep those models hidden
+// after the provider is switched back on. Loading the plugin drops the redundant rows.
 store['dsh-settings-resize'] = {
   disabledModels: [{ provider: 'deepseek-account', modelId: 'deepseek-flash' }],
   disabledProviders: ['deepseek-account'],
@@ -284,17 +283,17 @@ const staleCtx = {
   },
 }
 host.apply(staleCtx, {})
-// The rewrite runs asynchronously right after apply.
+// The repair runs asynchronously right after apply.
 await new Promise((resolve) => setTimeout(resolve, 20))
 
 check(
-  'a stale account entry is rewritten as per-model hides',
-  store['dsh-settings-resize'].disabledProviders.length === 0 &&
-    store['dsh-settings-resize'].disabledModels.length === 2,
+  'a redundant per-model row is dropped when its provider is already off',
+  store['dsh-settings-resize'].disabledModels.length === 0 &&
+    store['dsh-settings-resize'].disabledProviders.includes('deepseek-account'),
   JSON.stringify(store['dsh-settings-resize']),
 )
 check(
-  'after the rewrite the account route reports no models',
+  'the switched-off account route reports no models',
   (await staleRegistry.listModels('deepseek-account')).length === 0,
 )
 
