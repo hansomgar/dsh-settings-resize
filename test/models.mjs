@@ -59,6 +59,9 @@ const registry = {
   },
 }
 
+// Kept so a later check can prove the plugin never replaces it.
+const originalListProviders = registry.listProviders
+
 // The settings service the Host half talks to.
 const store = { 'dsh-settings-resize': { disabledModels: [], disabledProviders: [] } }
 const listeners = new Map()
@@ -99,6 +102,15 @@ host.apply(ctx, {})
 const service = ctx.dshSettingsResizeModels
 check('host exposes the model switch service', service !== undefined)
 check('applying the plugin wraps listModels', registry.listModels !== undefined)
+
+// `listProviders` must stay untouched: Settings → Models renders one card per entry in this
+// list, so a wrapped list would delete the provider's own card — including the switch that
+// turns it back on. Pickers drop the group instead, because a hidden provider lists no models.
+check(
+  'listProviders is left untouched so every Settings card keeps rendering',
+  registry.listProviders === originalListProviders,
+  registry.listProviders === originalListProviders ? 'original' : 'replaced',
+)
 
 // The filter runs on the Host, so `llm` has to be a declared dependency. Without it the plugin
 // started before the LLM runtime, its `apply` returned early, and the switches saved state that
@@ -175,12 +187,15 @@ check(
 // --- provider-level switch, official providers included ---------------------------
 await service.setProvider({ provider: 'deepseek', enabled: false })
 check(
-  'a switched-off provider leaves the picker provider list',
-  !(await registry.listProviders()).some((p) => p.id === 'deepseek'),
+  'a switched-off provider still stays in the provider list',
+  // Settings → Models renders one card per provider from this list, so removing the entry
+  // would delete the very card whose switch turns it back on.
+  (await registry.listProviders()).some((p) => p.id === 'deepseek'),
   JSON.stringify((await registry.listProviders()).map((p) => p.id)),
 )
 check(
   'a switched-off provider reports no models',
+  // buildModelCatalog drops groups with no models, which is what removes it from the pickers.
   (await pickerIds('deepseek')).length === 0,
   String((await pickerIds('deepseek')).length),
 )
@@ -191,7 +206,7 @@ check(
 )
 await service.setProvider({ provider: 'deepseek', enabled: true })
 check(
-  'turning the provider back on restores it',
+  'turning the provider back on restores its models',
   (await registry.listProviders()).some((p) => p.id === 'deepseek') &&
     (await pickerIds('deepseek')).length > 0,
 )
