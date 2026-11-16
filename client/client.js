@@ -337,13 +337,18 @@ window.__ModuleLoader__.load({
       if (providerId === undefined) return null
 
       /*
-       * Every provider gets a provider-level switch, including the account route.
+       * The account route has no provider-level switch.
        *
-       * The Host hides the account route through `listProviders` rather than by emptying its
-       * models, because the Models page drops that card as soon as its catalog group is empty.
-       * Its models therefore stay listed here while the provider itself leaves every picker.
+       * `Settings → Models` drops that card as soon as its catalog group is empty, and the
+       * conversation picker drops the group for the same reason — one condition, two effects.
+       * A provider switch would therefore delete the card it lives on. Instead the card offers a
+       * bulk model action: switching every model off empties the group, which removes the whole
+       * provider from every picker while the card stays.
        */
-      const providerSwitchable = true
+      const providerSwitchable = providerId !== ACCOUNT_PROVIDER
+      const allModelsOff =
+        models.length > 0 &&
+        models.every((model) => state.models.has(providerId + '\u0000' + model.id))
 
       const providerOff = state.providers.has(providerId)
       const offCount = models.filter((model) => state.models.has(providerId + '\u0000' + model.id)).length
@@ -370,8 +375,13 @@ window.__ModuleLoader__.load({
           ? null
           : h('div', { className: 'dsh-settings-resize-notice', role: 'status' }, notice),
 
-        // The provider switch, right-aligned on its own line against the card controls above.
-        // The account route has no provider-level switch; see `providerSwitchable`.
+        /*
+         * Provider controls.
+         *
+         * Ordinary routes get one switch that hides the provider as a whole. The account route
+         * gets a bulk action over its own models instead, because the provider switch cannot be
+         * offered there without deleting the card (see `providerSwitchable`).
+         */
         providerSwitchable
           ? h(
               'div',
@@ -400,7 +410,39 @@ window.__ModuleLoader__.load({
                   ),
               }),
             )
-          : null,
+          : h(
+              'div',
+              { className: 'dsh-settings-resize-provider-row' },
+              h(
+                'span',
+                { className: 'dsh-settings-resize-provider-caption' },
+                allModelsOff ? t('providerRowNoteOff') : t('providerRowNoteOn'),
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dsh-settings-resize-bulk',
+                  disabled: busy !== '' || models.length === 0,
+                  onClick: () =>
+                    commit(
+                      (current) => {
+                        // `models` above is this card's catalog; the set below is the stored list
+                        // of hidden keys, so the two need distinct names.
+                        const next = new Set(current.models)
+                        for (const model of models) {
+                          const key = providerId + '\u0000' + model.id
+                          if (allModelsOff) next.delete(key)
+                          else next.add(key)
+                        }
+                        return { models: next, providers: current.providers }
+                      },
+                      'bulk',
+                    ),
+                },
+                allModelsOff ? t('modelEnableAll') : t('modelDisableAll'),
+              ),
+            ),
 
         // Model rows. A provider with no readable catalog shows none; one that is switched off
         // shows the rows without switches.
@@ -551,6 +593,8 @@ window.__ModuleLoader__.load({
       modelRowNoteFollowsProvider: '随提供商一起隐藏',
       modelEnable: '启用',
       modelDisable: '关闭',
+      modelEnableAll: '全部启用',
+      modelDisableAll: '全部关闭',
       modelRestoreAll: '全部恢复（{count}）',
       modelWriteFailed: '写入失败：{message}',
     }
@@ -584,6 +628,8 @@ window.__ModuleLoader__.load({
       modelRowNoteFollowsProvider: 'Hidden with the provider',
       modelEnable: 'On',
       modelDisable: 'Off',
+      modelEnableAll: 'Turn all on',
+      modelDisableAll: 'Turn all off',
       modelRestoreAll: 'Restore all ({count})',
       modelWriteFailed: 'Write failed: {message}',
     }
@@ -739,6 +785,25 @@ html {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.dsh-settings-resize-bulk {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+  border: .5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+.dsh-settings-resize-bulk:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.dsh-settings-resize-bulk:disabled {
+  opacity: .45;
+  cursor: default;
 }
 .dsh-settings-resize-rowgroup-label {
   margin-top: 6px;

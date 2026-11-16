@@ -482,6 +482,8 @@ const t = (key, params) => {
     modelRowNoteFollowsProvider: '随提供商一起隐藏',
     modelEnable: '启用',
     modelDisable: '关闭',
+    modelEnableAll: '全部启用',
+    modelDisableAll: '全部关闭',
     modelRestoreAll: '全部恢复（{count}）',
     modelWriteFailed: '写入失败：{message}',
   }
@@ -553,12 +555,18 @@ const accountTree = accountReg.component({
   t,
   ...accountProps,
 })
-// The account route now offers a provider-level switch too: the Host hides it through
-// `listProviders` (which leaves its Settings row in place) rather than by emptying its models.
+// The account route offers no provider-level switch: the Models page drops that card as soon as
+// its catalog group is empty, and the picker drops the group for the same reason. It gets a bulk
+// model action instead, which empties the group without touching the card.
 check(
-  'the account route offers a provider-level switch',
-  accountTree !== null && findSwitch(accountTree, '整个提供商') !== undefined,
-  accountTree === null ? 'rendered null' : 'provider switch missing',
+  'the account route offers no provider-level switch',
+  accountTree !== null && findSwitch(accountTree, '整个提供商') === undefined,
+  accountTree === null ? 'rendered null' : 'provider switch present',
+)
+check(
+  'the account route offers a bulk model action instead',
+  accountTree !== null && collect(accountTree).some((text) => text === '全部关闭' || text === '全部启用'),
+  accountTree === null ? 'rendered null' : collect(accountTree).join('|').slice(0, 120),
 )
 
 // Its models come from the remote listing, not the settings document, so the card still shows
@@ -572,6 +580,7 @@ check(
   'the account route offers a switch per model',
   findSwitch(accountTree, 'DeepSeek-V4.1-Flash') !== undefined,
 )
+
 // --- toggling writes the plugin list, not the provider catalog ---------------------
 await findSwitch(tree, 'DeepSeek-V4-Pro').onClick()
 check(
