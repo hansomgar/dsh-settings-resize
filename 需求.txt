@@ -984,10 +984,14 @@ function installFilters(registry, state) {
     if (!Array.isArray(models)) return models
 
     /*
-     * `hidden.providers` names providers switched off as a whole. For every route but the
-     * account one that means "report nothing". The account route cannot be emptied without
-     * losing its card, so there the state carries the expanded model list instead (see
-     * `setProvider`), and this branch simply applies the per-model filter below.
+     * A provider switched off as a whole reports no models. That is what removes it from every
+     * picker, because `buildModelCatalog` drops groups whose model list is empty.
+     *
+     * The account route is special: its Settings card is dropped as soon as its catalog group
+     * is empty, so emptying it here would delete the card. `setProvider` therefore expands that
+     * switch into per-model hides instead of adding a provider entry, and this branch is
+     * skipped for it. If an entry is nonetheless present (a list written by an older build),
+     * it is honoured by the per-model filter below rather than ignored.
      */
     if (provider !== ACCOUNT_PROVIDER && hidden.providers.has(provider)) return []
     if (hidden.models.size === 0) return models
@@ -1024,6 +1028,33 @@ export function apply(ctx) {
       // A composition without listeners needs no announcement.
     }
   }
+
+  /*
+   * Migrate a list written by an older build.
+   *
+   * Those builds recorded the account route in `disabledProviders`. That entry no longer has
+   * any effect on the route itself (see `setProvider`), and leaving it behind would show the
+   * provider switch as off while its models still reached the pickers. Rewriting it as the
+   * per-model hides it was meant to represent makes the stored state match what the UI shows.
+   */
+  void (async () => {
+    if (!holder.state.providers.has(ACCOUNT_PROVIDER)) return
+    const listed = await previousModelsFor(registry, ACCOUNT_PROVIDER)
+    if (listed.length === 0) return
+    const models = new Set(holder.state.models)
+    for (const model of listed) {
+      if (typeof model?.id === 'string') models.add(modelKey(ACCOUNT_PROVIDER, model.id))
+    }
+    const providers = new Set(holder.state.providers)
+    providers.delete(ACCOUNT_PROVIDER)
+    holder.state = { models, providers }
+    try {
+      await writeState(settings, holder.state)
+      publish()
+    } catch {
+      // A read-only deployment keeps the old list; the per-model filter still applies it.
+    }
+  })()
 
   ctx.effect(
     () => installFilters(registry, holder),

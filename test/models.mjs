@@ -241,6 +241,63 @@ check(
     (await pickerIds('deepseek')).length > 0,
 )
 
+// --- migrating a list written by an older build -----------------------------------
+// Those builds recorded the account route in `disabledProviders`. That entry no longer hides
+// anything on that route, so the switch would read as off while its models kept reaching the
+// pickers. Loading the plugin rewrites it into the per-model hides it was meant to represent.
+store['dsh-settings-resize'] = {
+  disabledModels: [{ provider: 'deepseek-account', modelId: 'deepseek-flash' }],
+  disabledProviders: ['deepseek-account'],
+}
+const staleRegistry = {
+  async listModels(provider) {
+    return provider === 'deepseek-account'
+      ? [
+          { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash' },
+          { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
+        ]
+      : []
+  },
+  listProviders() {
+    return [{ id: 'deepseek-account', name: 'DeepSeek 账号' }]
+  },
+}
+const staleCtx = {
+  llm: staleRegistry,
+  settings: {
+    describe: () => [
+      {
+        ns: 'dsh-settings-resize',
+        value: JSON.parse(JSON.stringify(store['dsh-settings-resize'])),
+      },
+    ],
+    update: async (ns, patch) => {
+      store[ns] = { ...store[ns], ...patch }
+    },
+  },
+  effect: (fn) => fn(),
+  on: () => () => {},
+  emit: () => {},
+  provide: (n, v) => {
+    staleCtx[n] = v
+    return () => {}
+  },
+}
+host.apply(staleCtx, {})
+// The rewrite runs asynchronously right after apply.
+await new Promise((resolve) => setTimeout(resolve, 20))
+
+check(
+  'a stale account entry is rewritten as per-model hides',
+  store['dsh-settings-resize'].disabledProviders.length === 0 &&
+    store['dsh-settings-resize'].disabledModels.length === 2,
+  JSON.stringify(store['dsh-settings-resize']),
+)
+check(
+  'after the rewrite the account route reports no models',
+  (await staleRegistry.listModels('deepseek-account')).length === 0,
+)
+
 // --- restore all ------------------------------------------------------------------
 const restored = await service.restoreAll()
 check('restoreAll reports what it restored', restored.restored === 1, String(restored.restored))
