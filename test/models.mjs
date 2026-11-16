@@ -73,7 +73,11 @@ const settings = {
 
 const emitted = []
 const ctx = {
-  get: (name) => (name === 'llm' ? registry : name === 'settings' ? settings : undefined),
+  // Declared dependencies arrive as properties; `get` stays empty so a regression to the old
+  // `ctx.get('llm')` probe fails loudly instead of silently doing nothing.
+  llm: registry,
+  settings,
+  get: () => undefined,
   effect: (fn) => fn(),
   on: (event, handler) => {
     listeners.set(event, handler)
@@ -95,6 +99,15 @@ host.apply(ctx, {})
 const service = ctx.dshSettingsResizeModels
 check('host exposes the model switch service', service !== undefined)
 check('applying the plugin wraps listModels', registry.listModels !== undefined)
+
+// The filter runs on the Host, so `llm` has to be a declared dependency. Without it the plugin
+// started before the LLM runtime, its `apply` returned early, and the switches saved state that
+// never reached any picker.
+check(
+  'host declares llm and settings as dependencies',
+  JSON.stringify(host.inject ?? []) === '["llm","settings"]',
+  JSON.stringify(host.inject ?? null),
+)
 
 // The settings service only persists volatile fields; without `.volatile()` every write is
 // refused with `Plugin entry "<id>" has no volatile fields`. Both stored fields need it.
@@ -199,6 +212,8 @@ check('a model is hidden before uninstall', (await pickerIds('deepseek')).length
 // Re-apply so every cleanup can be collected and run, exactly as unload would.
 const cleanups = []
 const ctx2 = {
+  llm: registry,
+  settings,
   get: ctx.get,
   effect: (fn) => {
     const dispose = fn()

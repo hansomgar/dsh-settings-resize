@@ -779,6 +779,17 @@ import z from '@deepseek-ai/schemastery'
 export const name = 'dsh-settings-resize'
 
 /**
+ * Services this plugin needs before `apply` runs.
+ *
+ * `llm` is the one that matters: the whole model filter is a wrapper around the live registry's
+ * `listModels`/`listProviders`. Reading it with `ctx.get('llm')` and returning early when it is
+ * absent made the plugin a no-op whenever it happened to start before the LLM runtime — the
+ * switches stored their state, the UI showed it, and the picker kept listing everything.
+ * Declaring the dependency makes the loader hold this row until the registry exists.
+ */
+export const inject = ['llm', 'settings']
+
+/**
  * Settings namespace holding the switch state.
  *
  * A `Config` export is what makes this namespace exist at all: without it the settings
@@ -875,13 +886,12 @@ async function writeState(settings, state) {
  * assigning here does reach the registry; `symbols.original` is preferred when available
  * because it skips the proxy's property shadowing entirely.
  *
- * @param ctx - host plugin context.
- * @returns the object to patch, or undefined when no LLM registry is mounted.
+ * @param ctx - host plugin context; `llm` is a declared dependency, so it is present here.
+ * @returns the object to patch.
  */
 function liveRegistry(ctx) {
-  const llm = ctx.get('llm')
-  if (llm === undefined || llm === null) return undefined
-  const original = llm[Symbol.for('cordis.original')]
+  const llm = ctx.llm
+  const original = llm?.[Symbol.for('cordis.original')]
   return original ?? llm
 }
 
@@ -947,9 +957,10 @@ function installFilters(registry, state) {
 }
 
 export function apply(ctx) {
-  const settings = ctx.get('settings')
+  // Both are declared dependencies, so the loader guarantees them before this runs. No early
+  // return: a silent no-op here is what made the switches store state that never applied.
+  const settings = ctx.settings
   const registry = liveRegistry(ctx)
-  if (settings === undefined || registry === undefined) return
 
   /** Holder so the wrappers always see the current switch state. */
   const holder = { state: readState(settings) }
